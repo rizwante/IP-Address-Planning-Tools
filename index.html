@@ -1,0 +1,2567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IP Address Planning Tools</title>
+    <!-- 
+      IP Address Planning Tools
+      Created by: Rizwan Ghani
+      LinkedIn: www.linkedin.com/in/rizwanghani
+    -->
+    <meta name="author" content="Rizwan Ghani">
+    <!-- Load React and ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <!-- Load Babel for JSX translation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <!-- Load Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {}
+            }
+        }
+    </script>
+    <style>
+        /* Smooth transition for toasts */
+        .toast-enter { opacity: 0; transform: translateY(1rem); }
+        .toast-enter-active { opacity: 1; transform: translateY(0); transition: opacity 300ms, transform 300ms; }
+        .toast-exit { opacity: 1; transform: translateY(0); }
+        .toast-exit-active { opacity: 0; transform: translateY(1rem); transition: opacity 300ms, transform 300ms; }
+        /* Hide scrollbar for tabs but keep functionality */
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Modal animations */
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fadeIn 0.2s ease-out forwards; }
+        .animate-slide-up { animation: slideUp 0.3s ease-out forwards; }
+        
+        /* Striped background for free space visualization */
+        .striped-bg {
+            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.03) 10px, rgba(0,0,0,0.03) 20px);
+        }
+        .dark .striped-bg {
+            background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255,255,255,0.05) 10px, rgba(255,255,255,0.05) 20px);
+        }
+        
+        /* Custom scrollbar for inner lists and history */
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(156, 163, 175, 0.5); border-radius: 20px; }
+        .dark .custom-scrollbar::-webkit-scrollbar-thumb { background-color: rgba(75, 85, 99, 0.5); }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-900 dark:text-slate-100 antialiased font-sans transition-colors duration-200">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo, useCallback } = React;
+
+        // ==========================================
+        // HISTORY HOOK
+        // ==========================================
+        function useHistory(key, maxItems = 20) {
+            const [history, setHistory] = useState(() => {
+                try {
+                    const item = localStorage.getItem(key);
+                    return item ? JSON.parse(item) : [];
+                } catch (error) {
+                    return [];
+                }
+            });
+
+            const addHistory = (val) => {
+                if (!val || val.trim() === '') return;
+                setHistory(prev => {
+                    const filtered = prev.filter(item => item !== val);
+                    const next = [val, ...filtered].slice(0, maxItems);
+                    localStorage.setItem(key, JSON.stringify(next));
+                    return next;
+                });
+            };
+
+            const clearHistory = () => {
+                setHistory([]);
+                localStorage.removeItem(key);
+            };
+
+            return { history, addHistory, clearHistory };
+        }
+
+        // ==========================================
+        // UTILITY FUNCTIONS (BigInt Powered for IPv4 & IPv6)
+        // ==========================================
+        
+        const parseIp = (str) => {
+            if (!str) return null;
+            str = str.trim();
+            if (str.includes(':')) {
+                let parts = str.split('::');
+                if (parts.length > 2) return null;
+                let left = parts[0] ? parts[0].split(':') : [];
+                let right = parts.length === 2 && parts[1] ? parts[1].split(':') : [];
+                let missing = 8 - (left.length + right.length);
+                if (missing < 0) return null;
+                let full = [...left];
+                for(let i=0; i<missing; i++) full.push('0');
+                full = full.concat(right);
+                if (full.length !== 8) return null;
+                
+                let longVal = 0n;
+                for(let i=0; i<8; i++) {
+                    let hex = full[i] || '0';
+                    if (hex === '') hex = '0';
+                    let val = parseInt(hex, 16);
+                    if (isNaN(val) || val < 0 || val > 0xffff) return null;
+                    longVal = (longVal << 16n) | BigInt(val);
+                }
+                return { version: 6, long: longVal };
+            } else {
+                const parts = str.split('.');
+                if (parts.length !== 4) return null;
+                let longVal = 0n;
+                for (let i = 0; i < 4; i++) {
+                    const val = parseInt(parts[i], 10);
+                    if (isNaN(val) || val < 0 || val > 255) return null;
+                    longVal = (longVal << 8n) | BigInt(val);
+                }
+                return { version: 4, long: longVal };
+            }
+        };
+
+        const formatIp = (longVal, version) => {
+            if (version === 6) {
+                let parts = [];
+                for (let i = 0; i < 8; i++) {
+                    let shift = BigInt((7 - i) * 16);
+                    let block = (longVal >> shift) & 0xffffn;
+                    parts.push(block.toString(16));
+                }
+                let bestStart = -1, bestLen = 0, currentStart = -1, currentLen = 0;
+                for (let i = 0; i < 8; i++) {
+                    if (parts[i] === '0') {
+                        if (currentStart === -1) currentStart = i;
+                        currentLen++;
+                        if (currentLen > bestLen) { bestLen = currentLen; bestStart = currentStart; }
+                    } else {
+                        currentStart = -1; currentLen = 0;
+                    }
+                }
+                if (bestLen > 1) {
+                    parts.splice(bestStart, bestLen, '');
+                    if (bestStart === 0) parts.unshift('');
+                    if (bestStart + bestLen === 8) parts.push('');
+                }
+                return parts.join(':') || '::';
+            } else {
+                return [
+                    Number((longVal >> 24n) & 255n),
+                    Number((longVal >> 16n) & 255n),
+                    Number((longVal >> 8n) & 255n),
+                    Number(longVal & 255n)
+                ].join('.');
+            }
+        };
+
+        const parseMask = (str, version) => {
+            if (!str) return null;
+            str = str.trim();
+            if (str.startsWith('/')) str = str.substring(1);
+            
+            let maxBits = version === 6 ? 128 : 32;
+            let bits = BigInt(maxBits);
+            let cidr;
+
+            if (!str.includes('.') && !str.includes(':')) {
+                cidr = parseInt(str, 10);
+                if (isNaN(cidr) || cidr < 0 || cidr > maxBits) return null;
+            } else {
+                const maskIp = parseIp(str);
+                if (!maskIp || maskIp.version !== version) return null;
+                
+                let temp = maskIp.long;
+                cidr = 0;
+                let checkBit = 1n << (bits - 1n);
+                while (temp & checkBit) {
+                    cidr++;
+                    temp = (temp << 1n) & ((1n << bits) - 1n);
+                }
+                if (temp !== 0n) return null; 
+            }
+
+            let longVal = 0n;
+            if (cidr > 0) {
+                longVal = ((1n << bits) - 1n) ^ ((1n << (bits - BigInt(cidr))) - 1n);
+            }
+            return { cidr, long: longVal };
+        };
+
+        const executeCopy = (text, message, showToast) => {
+            const textArea = document.createElement("textarea");
+            textArea.value = text;
+            textArea.style.top = "0";
+            textArea.style.left = "0";
+            textArea.style.position = "fixed";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                showToast(message || 'Copied to clipboard!');
+            } catch (err) {
+                console.error('Fallback: Oops, unable to copy', err);
+            }
+            document.body.removeChild(textArea);
+        };
+
+        const requestSort = (key, config, setConfig) => {
+            let direction = 'asc';
+            if (config.key === key && config.direction === 'asc') direction = 'desc';
+            setConfig({ key, direction });
+        };
+
+        const sortData = (data, config) => {
+            if (!data) return null;
+            let sortableItems = [...data];
+            sortableItems.sort((a, b) => {
+                let aVal = a[config.key];
+                let bVal = b[config.key];
+
+                if (['network', 'firstUsable', 'lastUsable', 'broadcast', 'maskDecimal', 'firstUsed', 'lastUsed', 'firstIp', 'lastIp'].includes(config.key)) {
+                    let parsedA = parseIp(aVal);
+                    let parsedB = parseIp(bVal);
+                    aVal = parsedA ? parsedA.long : 0n;
+                    bVal = parsedB ? parsedB.long : 0n;
+                } else if (config.key === 'maskCidr') {
+                    aVal = parseInt(aVal.replace('/', ''), 10);
+                    bVal = parseInt(bVal.replace('/', ''), 10);
+                } else if (['usedCount', 'freeCount', 'size', 'neededIps', 'allocatedIps', 'value'].includes(config.key)) {
+                    aVal = BigInt(aVal);
+                    bVal = BigInt(bVal);
+                }
+
+                if (aVal < bVal) return config.direction === 'asc' ? -1 : 1;
+                if (aVal > bVal) return config.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+            return sortableItems;
+        };
+
+        // Algorithm to convert a range of IPs into perfectly aligned CIDR blocks
+        const rangeToCidrs = (startLong, endLong, maxBits) => {
+            let cidrs = [];
+            let current = startLong;
+            while (current <= endLong) {
+                // Find max shift based on trailing zeros of current IP (Alignment)
+                let maxShiftByAlignment = 0n;
+                let temp = current;
+                while (temp > 0n && (temp & 1n) === 0n && maxShiftByAlignment < BigInt(maxBits)) {
+                    maxShiftByAlignment++;
+                    temp >>= 1n;
+                }
+                if (current === 0n) maxShiftByAlignment = BigInt(maxBits);
+
+                // Find max shift based on remaining space
+                let remaining = endLong - current + 1n;
+                let maxShiftBySpace = 0n;
+                while ((1n << (maxShiftBySpace + 1n)) <= remaining && maxShiftBySpace < BigInt(maxBits)) {
+                    maxShiftBySpace++;
+                }
+
+                let shift = maxShiftByAlignment < maxShiftBySpace ? maxShiftByAlignment : maxShiftBySpace;
+                let cidr = Number(BigInt(maxBits) - shift);
+                
+                cidrs.push({ networkLong: current, cidr: cidr, size: 1n << shift });
+                current += (1n << shift);
+            }
+            return cidrs;
+        };
+
+        // ==========================================
+        // UI COMPONENTS (Icons & Shared Elements)
+        // ==========================================
+
+        const InfoIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500 mt-0.5 shrink-0">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="16" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+            </svg>
+        );
+
+        const BookIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path>
+            </svg>
+        );
+
+        const CopyIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+        );
+
+        const ExcelIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+                <line x1="8" y1="13" x2="16" y2="13"></line>
+                <line x1="8" y1="17" x2="16" y2="17"></line>
+                <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+        );
+
+        const CloseIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+            </svg>
+        );
+
+        const TrashIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+        );
+
+        const PlusIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+        );
+
+        const SunIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+        );
+
+        const MoonIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+        );
+
+        const HistoryIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+        );
+
+        const LinkedInIcon = () => (
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M19 0h-14c-2.761 0-5 2.239-5 5v14c0 2.761 2.239 5 5 5h14c2.762 0 5-2.239 5-5v-14c0-2.761-2.238-5-5-5zm-11 19h-3v-11h3v11zm-1.5-12.268c-.966 0-1.75-.79-1.75-1.764s.784-1.764 1.75-1.764 1.75.79 1.75 1.764-.783 1.764-1.75 1.764zm13.5 12.268h-3v-5.604c0-3.368-4-3.113-4 0v5.604h-3v-11h3v1.765c1.396-2.586 7-2.777 7 2.476v6.759z"/>
+            </svg>
+        );
+
+        const getSortIcon = (key, config) => {
+            if (config.key !== key) return <span className="ml-1 text-slate-300 dark:text-slate-600">↕</span>;
+            return config.direction === 'asc' ? <span className="ml-1 text-blue-500">↑</span> : <span className="ml-1 text-blue-500">↓</span>;
+        };
+
+        const CopyableRow = ({ label, value, showToast, extraData }) => {
+            return (
+                <tr className="border-b border-slate-100 dark:border-slate-700/50 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors group">
+                    <td className="pr-4 py-3 font-semibold text-slate-600 dark:text-slate-300 w-40">{label}</td>
+                    <td className="py-3 text-slate-800 dark:text-slate-200 font-mono text-base flex items-center gap-3">
+                        <span>{value}</span>
+                        {extraData && <span className="text-slate-500 dark:text-slate-400 font-sans font-normal text-sm">{extraData}</span>}
+                        <button 
+                            onClick={() => executeCopy(value, `${label} copied!`, showToast)}
+                            className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-blue-50 dark:hover:bg-slate-700"
+                            title="Copy to clipboard"
+                        >
+                            <CopyIcon />
+                        </button>
+                    </td>
+                </tr>
+            );
+        };
+
+        const HistoryPills = ({ history, onSelect, onClear }) => {
+            if (history.length === 0) return null;
+            return (
+                <div className="flex items-center gap-2 mt-3 overflow-x-auto custom-scrollbar pb-2">
+                    <HistoryIcon className="text-slate-400 shrink-0" />
+                    {history.map((h, i) => (
+                        <button 
+                            key={i} 
+                            onClick={() => onSelect(h)}
+                            className="shrink-0 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-400 px-2.5 py-1 rounded-full whitespace-nowrap transition-colors border border-slate-200 dark:border-slate-700 font-mono"
+                        >
+                            {h}
+                        </button>
+                    ))}
+                    <button onClick={onClear} className="shrink-0 text-[10px] text-slate-400 hover:text-red-500 ml-2 uppercase tracking-wide font-bold transition-colors">Clear</button>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // SUB-COMPONENTS
+        // ==========================================
+
+        function Calculator({ showToast }) {
+            const { history, addHistory, clearHistory } = useHistory('calc_history');
+            const [ipInput, setIpInput] = useState('10.135.8.20');
+            const [maskInput, setMaskInput] = useState('255.255.255.240');
+            const [results, setResults] = useState(null);
+            const [error, setError] = useState(null);
+            const [generatedIps, setGeneratedIps] = useState('');
+            const [ipListError, setIpListError] = useState(null);
+
+            useEffect(() => { calculate(); }, []);
+
+            const handleIpChange = (e) => {
+                const val = e.target.value;
+                if (val.includes('/')) {
+                    const [ip, mask] = val.split('/');
+                    setIpInput(ip.trim());
+                    setMaskInput(mask.trim());
+                } else {
+                    setIpInput(val);
+                }
+            };
+
+            const calculate = () => {
+                setError(null);
+                setGeneratedIps('');
+                setIpListError(null);
+                const ipData = parseIp(ipInput);
+                if (ipData === null) { setError("Invalid IP Address format."); setResults(null); return; }
+
+                const maskData = parseMask(maskInput, ipData.version);
+                if (maskData === null) { setError("Invalid Subnet Mask format."); setResults(null); return; }
+
+                // Add to history
+                addHistory(`${ipInput}/${maskData.cidr}`);
+
+                const version = ipData.version;
+                const maxBits = version === 6 ? 128n : 32n;
+                const fullMask = (1n << maxBits) - 1n;
+
+                const { cidr, long: maskLong } = maskData;
+                const ipLong = ipData.long;
+                
+                const networkLong = ipLong & maskLong;
+                const wildcardLong = (~maskLong) & fullMask;
+                const broadcastLong = networkLong | wildcardLong;
+
+                let hostMinLong, hostMaxLong, hostsPerNet;
+
+                if (version === 4) {
+                    hostMinLong = networkLong + 1n;
+                    hostMaxLong = broadcastLong - 1n;
+                    hostsPerNet = (wildcardLong - 1n > 0n) ? (wildcardLong - 1n) : 0n;
+
+                    if (cidr === 31) { hostMinLong = networkLong; hostMaxLong = broadcastLong; hostsPerNet = 2n; }
+                    else if (cidr === 32) { hostMinLong = networkLong; hostMaxLong = broadcastLong; hostsPerNet = 1n; }
+                } else {
+                    hostMinLong = networkLong;
+                    hostMaxLong = broadcastLong;
+                    hostsPerNet = wildcardLong + 1n;
+                }
+
+                let ipClass = '';
+                let ipType = 'Public Internet';
+
+                if (version === 4) {
+                    const firstOctet = Number((ipLong >> 24n) & 255n);
+                    if (firstOctet >= 1 && firstOctet <= 127) ipClass = 'Class A';
+                    else if (firstOctet >= 128 && firstOctet <= 191) ipClass = 'Class B';
+                    else if (firstOctet >= 192 && firstOctet <= 223) ipClass = 'Class C';
+                    else if (firstOctet >= 224 && firstOctet <= 239) ipClass = 'Class D (Multicast)';
+                    else if (firstOctet >= 240 && firstOctet <= 255) ipClass = 'Class E (Reserved)';
+
+                    if (firstOctet === 10) ipType = 'Private (RFC 1918)';
+                    else if (firstOctet === 172 && Number((ipLong >> 16n) & 255n) >= 16 && Number((ipLong >> 16n) & 255n) <= 31) ipType = 'Private (RFC 1918)';
+                    else if (firstOctet === 192 && Number((ipLong >> 16n) & 255n) === 168) ipType = 'Private (RFC 1918)';
+                    else if (firstOctet === 127) ipType = 'Loopback';
+                    else if (firstOctet === 169 && Number((ipLong >> 16n) & 255n) === 254) ipType = 'Link-Local (APIPA)';
+                    else if (firstOctet === 100 && Number((ipLong >> 16n) & 255n) >= 64 && Number((ipLong >> 16n) & 255n) <= 127) ipType = 'Carrier-Grade NAT';
+                } else {
+                    const firstBlock = Number((ipLong >> 112n) & 0xffffn);
+                    ipClass = 'IPv6 Address';
+                    if (ipLong === 1n) ipType = 'Loopback (::1)';
+                    else if (ipLong === 0n) ipType = 'Unspecified (::)';
+                    else if ((firstBlock & 0xff00) === 0xff00) ipType = 'Multicast (ff00::/8)';
+                    else if ((firstBlock & 0xfe80) === 0xfe80) ipType = 'Link-Local (fe80::/10)';
+                    else if ((firstBlock & 0xfc00) === 0xfc00) ipType = 'Unique Local (fc00::/7)';
+                    else if (firstBlock === 0x2001 && Number((ipLong >> 96n) & 0xffffn) === 0xdb8) ipType = 'Documentation (2001:db8::/32)';
+                    else ipType = 'Global Unicast';
+                }
+
+                setResults({
+                    version, ipLong, maskLong, wildcardLong, networkLong, broadcastLong, 
+                    hostMinLong, hostMaxLong, hostsPerNet: hostsPerNet.toString(), cidr, ipClass, ipType
+                });
+            };
+
+            const generateAllIps = () => {
+                if (!results) return;
+                setIpListError(null);
+                
+                const hostsBig = BigInt(results.hostsPerNet);
+                if (hostsBig === 0n) {
+                    setIpListError("No usable IPs in this subnet.");
+                    setGeneratedIps('');
+                    return;
+                }
+                if (hostsBig > 65536n) {
+                    setIpListError(`Too many IPs to list (${results.hostsPerNet}). Limit is 65,536 to prevent browser freezing.`);
+                    setGeneratedIps('');
+                    return;
+                }
+                
+                let ips = [];
+                for (let i = results.hostMinLong; i <= results.hostMaxLong; i++) {
+                    ips.push(formatIp(i, results.version));
+                }
+                setGeneratedIps(ips.join('\n'));
+                showToast(`Generated ${results.hostsPerNet} IPs`);
+            };
+
+            const copyToExcel = () => {
+                if (!results) return;
+                const v = results.version;
+                let text = `Address:\t${formatIp(results.ipLong, v)}\n`;
+                text += `Netmask:\t${formatIp(results.maskLong, v)}\n`;
+                text += `Wildcard:\t${formatIp(results.wildcardLong, v)}\n`;
+                text += `Network:\t${formatIp(results.networkLong, v)}/${results.cidr}\t${results.ipClass ? '('+results.ipClass+')' : ''}\n`;
+                text += `Broadcast:\t${formatIp(results.broadcastLong, v)}\n`;
+                text += `1st Usable IP:\t${formatIp(results.hostMinLong, v)}\n`;
+                text += `Last Usable IP:\t${formatIp(results.hostMaxLong, v)}\n`;
+                text += `No. of Useable IPs:\t${results.hostsPerNet}`;
+                executeCopy(text, 'Calculator results copied to Excel format!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">How to use the Calculator</strong>
+                            <p className="opacity-90 mb-1">Analyze network boundaries, broadcast addresses, and usable host ranges.</p>
+                            <ul className="list-disc pl-4 space-y-1 opacity-90">
+                                <li><strong>Magic Paste:</strong> Paste an IP with a CIDR suffix (e.g., <code>192.168.1.1/24</code>) and the mask will auto-fill.</li>
+                                <li>Supports both <strong>IPv4</strong> and massive 128-bit <strong>IPv6</strong> addresses natively.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 mb-8">
+                        <div className="flex flex-wrap gap-6 items-end">
+                            <div className="flex-1 min-w-[200px]">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">
+                                    Address <span className="font-normal text-slate-400 dark:text-slate-500 ml-1">(Auto-detects /CIDR)</span>
+                                </label>
+                                <input 
+                                    type="text" 
+                                    value={ipInput} 
+                                    onChange={handleIpChange} 
+                                    onKeyDown={(e) => e.key === 'Enter' && calculate()} 
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow font-mono" 
+                                    placeholder="e.g. 192.168.1.1/24" 
+                                />
+                            </div>
+                            <div className="hidden sm:block text-2xl font-light text-slate-300 dark:text-slate-600 mb-2">/</div>
+                            <div className="flex-1 min-w-[200px]">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">
+                                    Netmask <span className="font-normal text-slate-400 dark:text-slate-500 ml-1">(CIDR or Decimal)</span>
+                                </label>
+                                <input 
+                                    type="text" 
+                                    value={maskInput} 
+                                    onChange={(e) => setMaskInput(e.target.value)} 
+                                    onKeyDown={(e) => e.key === 'Enter' && calculate()} 
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-shadow font-mono" 
+                                />
+                            </div>
+                            <button 
+                                onClick={calculate} 
+                                className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold shadow-sm transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800"
+                            >
+                                Calculate
+                            </button>
+                        </div>
+                        {error && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>{error}</div>}
+                        <HistoryPills history={history} onClear={clearHistory} onSelect={(val) => {
+                            if (val.includes('/')) {
+                                const [ip, mask] = val.split('/');
+                                setIpInput(ip); setMaskInput(mask);
+                            } else { setIpInput(val); }
+                        }} />
+                    </div>
+
+                    {results && (
+                        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-between items-center">
+                                <h3 className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                    Results
+                                    <span className="text-xs font-medium px-2 py-0.5 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded-full border border-blue-200 dark:border-blue-800">IPv{results.version}</span>
+                                </h3>
+                                <button 
+                                    onClick={copyToExcel} 
+                                    className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shadow-sm"
+                                >
+                                    <ExcelIcon /> Copy for Excel
+                                </button>
+                            </div>
+                            <div className="px-6 py-2">
+                                <table className="w-full text-left whitespace-nowrap text-sm">
+                                    <tbody>
+                                        <CopyableRow label="Address:" value={formatIp(results.ipLong, results.version)} showToast={showToast} />
+                                        <CopyableRow label="Netmask:" value={formatIp(results.maskLong, results.version)} showToast={showToast} />
+                                        <CopyableRow label="Wildcard:" value={formatIp(results.wildcardLong, results.version)} showToast={showToast} />
+                                        
+                                        <tr className="border-b border-slate-100 dark:border-slate-700/50 bg-blue-50/30 dark:bg-blue-900/10 group hover:bg-blue-50/60 dark:hover:bg-blue-900/20 transition-colors">
+                                            <td className="pr-4 py-3 font-bold text-slate-800 dark:text-slate-200">Network:</td>
+                                            <td className="py-3 text-blue-700 dark:text-blue-400 font-mono font-bold text-base flex items-center gap-3">
+                                                <span>{formatIp(results.networkLong, results.version)}/{results.cidr}</span>
+                                                {results.ipClass && <span className="text-emerald-600 dark:text-emerald-400 font-sans font-normal text-sm bg-emerald-50 dark:bg-emerald-900/20 px-2 py-0.5 rounded-full border border-emerald-100 dark:border-emerald-800/50">{results.ipClass}</span>}
+                                                <button onClick={() => executeCopy(`${formatIp(results.networkLong, results.version)}/${results.cidr}`, 'Network address copied!', showToast)} className="text-slate-400 dark:text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-900/40"><CopyIcon /></button>
+                                            </td>
+                                        </tr>
+                                        
+                                        <CopyableRow label="Broadcast:" value={formatIp(results.broadcastLong, results.version)} showToast={showToast} />
+                                        <CopyableRow label="1st Usable IP:" value={formatIp(results.hostMinLong, results.version)} showToast={showToast} />
+                                        <CopyableRow label="Last Usable IP:" value={formatIp(results.hostMaxLong, results.version)} showToast={showToast} />
+                                        <CopyableRow label="No. of Useable IPs:" value={results.hostsPerNet} extraData={`(${results.ipType})`} showToast={showToast} />
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <div className="px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700">
+                                <div className="flex items-center gap-4 mb-3">
+                                    <button 
+                                        onClick={generateAllIps} 
+                                        className="text-sm font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-4 py-2 rounded-md transition-colors shadow-sm"
+                                    >
+                                        Generate Complete Range of Usable IPs
+                                    </button>
+                                    {ipListError && <span className="text-red-500 dark:text-red-400 text-sm flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>{ipListError}</span>}
+                                </div>
+                                {generatedIps && (
+                                    <div className="relative">
+                                        <textarea 
+                                            readOnly 
+                                            value={generatedIps} 
+                                            className="w-full h-48 p-3 border border-slate-300 dark:border-slate-600 rounded-md font-mono text-sm focus:outline-none bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 shadow-inner custom-scrollbar"
+                                        />
+                                        <button 
+                                            onClick={() => executeCopy(generatedIps, 'Complete range copied!', showToast)}
+                                            className="absolute top-3 right-3 p-2 bg-slate-100 dark:bg-slate-800 hover:bg-blue-100 dark:hover:bg-slate-700 text-slate-500 dark:text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-md transition-colors shadow-sm"
+                                            title="Copy full range"
+                                        >
+                                            <CopyIcon />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // --- BINARY TREEMAP COMPONENT ---
+        const SubnetTree = ({ node, version, depth = 0 }) => {
+            if (!node) return null;
+
+            if (node.type === 'split') {
+                // Alternate splitting direction for a beautiful Treemap effect
+                const isRow = depth % 2 === 0;
+                return (
+                    <div className={`flex w-full h-full ${isRow ? 'flex-row' : 'flex-col'}`}>
+                        <div className={`flex-1 min-w-0 min-h-0 ${isRow ? 'border-r border-slate-900/10 dark:border-white/10' : 'border-b border-slate-900/10 dark:border-white/10'}`}>
+                            <SubnetTree node={node.left} version={version} depth={depth + 1} />
+                        </div>
+                        <div className="flex-1 min-w-0 min-h-0">
+                            <SubnetTree node={node.right} version={version} depth={depth + 1} />
+                        </div>
+                    </div>
+                );
+            }
+
+            if (node.type === 'allocated') {
+                return (
+                    <div className={`${node.allocData.colorClass} w-full h-full flex items-center justify-center text-white font-bold overflow-hidden group relative cursor-help hover:opacity-90 transition-opacity`} title={`${node.allocData.name}\n${formatIp(node.networkLong, version)}/${node.cidr}`}>
+                        <span className="text-[10px] md:text-xs truncate px-1">{node.allocData.name}</span>
+                        <div className="hidden group-hover:flex absolute inset-0 bg-black/80 flex-col items-center justify-center p-2 z-10 text-center backdrop-blur-sm transition-all duration-200">
+                            <span className="truncate w-full text-[10px] md:text-xs mb-0.5">{node.allocData.name}</span>
+                            <span className="font-mono text-[8px] md:text-[10px] opacity-90">{formatIp(node.networkLong, version)}/{node.cidr}</span>
+                        </div>
+                    </div>
+                );
+            }
+
+            // Free Node
+            return (
+                <div className="striped-bg w-full h-full flex items-center justify-center text-slate-400 dark:text-slate-500 cursor-help group hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition-colors" title={`Free Space\n${formatIp(node.networkLong, version)}/${node.cidr}`}>
+                    <span className="opacity-0 group-hover:opacity-100 font-mono text-[8px] md:text-[10px] bg-white/90 dark:bg-slate-800/90 px-1 rounded transition-opacity truncate max-w-full">/{node.cidr}</span>
+                </div>
+            );
+        };
+
+        function VlsmPlanner({ showToast }) {
+            const { history, addHistory, clearHistory } = useHistory('vlsm_history');
+            const [majorNetwork, setMajorNetwork] = useState('192.168.1.0/24');
+            const [visualMode, setVisualMode] = useState('treemap'); // Add visualization toggle
+            const [subnets, setSubnets] = useState([
+                { id: 1, name: 'VLAN 10 - HR', type: 'hosts', value: 60, quantity: 1 },
+                { id: 2, name: 'VLAN 20 - IT', type: 'hosts', value: 25, quantity: 1 },
+                { id: 3, name: 'PtP Links', type: 'cidr', value: 30, quantity: 3 }
+            ]);
+            const [results, setResults] = useState(null);
+            const [error, setError] = useState(null);
+            const [sortConfig, setSortConfig] = useState({ key: 'allocatedIps', direction: 'desc' });
+
+            const colors = ['bg-blue-500', 'bg-emerald-500', 'bg-purple-500', 'bg-amber-500', 'bg-pink-500', 'bg-cyan-500', 'bg-rose-500', 'bg-indigo-500', 'bg-teal-500'];
+
+            const addSubnet = () => {
+                const newId = subnets.length > 0 ? Math.max(...subnets.map(s => s.id)) + 1 : 1;
+                setSubnets([...subnets, { id: newId, name: `New Subnet ${newId}`, type: 'hosts', value: 10, quantity: 1 }]);
+            };
+
+            const updateSubnet = (id, field, value) => {
+                setSubnets(subnets.map(s => s.id === id ? { ...s, [field]: value } : s));
+            };
+
+            const removeSubnet = (id) => {
+                setSubnets(subnets.filter(s => s.id !== id));
+            };
+
+            // TRUE BINARY TREE INSERTION LOGIC
+            const insertAllocation = (node, alloc, maxBitsNumber) => {
+                if (node.type === 'allocated') return false; // Full
+                
+                // Exact match found!
+                if (node.cidr === alloc.cidr) {
+                    if (node.type === 'free') {
+                        node.type = 'allocated';
+                        node.allocData = alloc;
+                        alloc.networkLong = node.networkLong; // Lock in the assigned IP
+                        return true;
+                    }
+                    return false;
+                }
+                
+                // Target CIDR is smaller (meaning larger network block), so this node is too small.
+                if (node.cidr > alloc.cidr) return false; 
+                
+                // Need to split this free node into two halves
+                if (node.type === 'free') {
+                    node.type = 'split';
+                    const step = 1n << BigInt(maxBitsNumber - (node.cidr + 1));
+                    node.left = { networkLong: node.networkLong, cidr: node.cidr + 1, type: 'free' };
+                    node.right = { networkLong: node.networkLong + step, cidr: node.cidr + 1, type: 'free' };
+                }
+                
+                // Recursively try left, then right
+                if (insertAllocation(node.left, alloc, maxBitsNumber)) return true;
+                return insertAllocation(node.right, alloc, maxBitsNumber);
+            };
+
+            const calculateVlsm = () => {
+                setError(null);
+                
+                const [ipStr, maskStr] = majorNetwork.split('/');
+                if (!ipStr || !maskStr) {
+                    setResults(null);
+                    return setError("Major network must be in CIDR format (e.g., 192.168.1.0/24 or 2001:db8::/48)");
+                }
+
+                const ipData = parseIp(ipStr);
+                if (!ipData) {
+                    setResults(null);
+                    return setError("Invalid IP format.");
+                }
+                
+                const version = ipData.version;
+                const maskData = parseMask(maskStr, version);
+                if (!maskData) {
+                    setResults(null);
+                    return setError("Invalid CIDR mask.");
+                }
+
+                // Add to history on successful format
+                addHistory(majorNetwork);
+
+                const maxBitsNumber = version === 4 ? 32 : 128;
+                const maxBits = BigInt(maxBitsNumber);
+                const majorNetworkLong = ipData.long & maskData.long;
+                const majorBroadcastLong = majorNetworkLong | ((1n << (maxBits - BigInt(maskData.cidr))) - 1n);
+                const totalMajorIps = majorBroadcastLong - majorNetworkLong + 1n;
+
+                let processedReqs = [];
+                for (const req of subnets) {
+                    let qty = parseInt(req.quantity, 10);
+                    if (isNaN(qty) || qty < 1) qty = 1;
+                    
+                    let val = parseInt(req.value, 10);
+                    if (isNaN(val) || val < 0) continue; 
+                    if (req.name.trim() === '') continue;
+
+                    for (let j = 0; j < qty; j++) {
+                        let name = qty > 1 ? `${req.name} #${j + 1}` : req.name;
+                        let allocatedBits, neededIps;
+
+                        if (req.type === 'cidr') {
+                            if (val > maxBitsNumber || val < 0) {
+                                setResults(null);
+                                return setError(`Invalid CIDR /${val} for ${name}`);
+                            }
+                            allocatedBits = BigInt(maxBitsNumber - val);
+                            neededIps = 1n << allocatedBits;
+                        } else {
+                            if (val === 0) continue;
+                            // IPv4 needs +2 (Net/Broadcast). IPv6 doesn't.
+                            neededIps = version === 4 ? BigInt(val) + 2n : BigInt(val);
+                            allocatedBits = 0n;
+                            while ((1n << allocatedBits) < neededIps) {
+                                allocatedBits++;
+                            }
+                            if (allocatedBits > maxBits) allocatedBits = maxBits;
+                        }
+
+                        let allocatedIps = 1n << allocatedBits;
+                        let cidr = Number(maxBits - allocatedBits);
+
+                        processedReqs.push({
+                            originalId: req.id,
+                            name,
+                            sizeLabel: req.type === 'cidr' ? `/${val}` : `${val} Req. IPs`,
+                            neededIps,
+                            allocatedIps,
+                            cidr
+                        });
+                    }
+                }
+
+                if (processedReqs.length === 0) {
+                    setResults(null);
+                    return setError("Please add at least one valid subnet requirement.");
+                }
+
+                // CRITICAL: VLSM requires sorting from largest allocated block to smallest
+                processedReqs.sort((a, b) => {
+                    if (a.allocatedIps > b.allocatedIps) return -1;
+                    if (a.allocatedIps < b.allocatedIps) return 1;
+                    return 0;
+                });
+
+                // Build root node for the Binary Treemap
+                let rootNode = { networkLong: majorNetworkLong, cidr: maskData.cidr, type: 'free' };
+                let finalResults = [];
+                let usedIps = 0n;
+
+                for (let i = 0; i < processedReqs.length; i++) {
+                    let req = processedReqs[i];
+                    req.colorClass = colors[req.originalId % colors.length];
+                    
+                    // Insert into mathematical tree map
+                    let success = insertAllocation(rootNode, req, maxBitsNumber);
+                    
+                    if (!success) {
+                        setResults(null); // Clear stale UI maps!
+                        return setError(`Not enough contiguous space in the major network to allocate "${req.name}" (requires /${req.cidr}). Total block may be exhausted.`);
+                    }
+
+                    // Once successfully inserted, req.networkLong is populated
+                    let bcastLong = req.networkLong + req.allocatedIps - 1n;
+                    
+                    let firstLong, lastLong;
+                    if (version === 4) {
+                        firstLong = req.cidr >= 31 ? req.networkLong : req.networkLong + 1n;
+                        lastLong = req.cidr === 32 ? req.networkLong : (req.cidr === 31 ? bcastLong : bcastLong - 1n);
+                    } else {
+                        // IPv6
+                        firstLong = req.networkLong;
+                        lastLong = bcastLong;
+                    }
+
+                    // Properly format IPv4/IPv6 mask
+                    const maskBitsInt = (1n << BigInt(maxBitsNumber)) - 1n;
+                    const shiftInt = 1n << BigInt(maxBitsNumber - req.cidr);
+                    const calculatedMaskLong = maskBitsInt ^ (shiftInt - 1n);
+
+                    finalResults.push({
+                        ...req,
+                        no: i + 1,
+                        network: formatIp(req.networkLong, version),
+                        broadcast: formatIp(bcastLong, version),
+                        firstUsable: formatIp(firstLong, version),
+                        lastUsable: formatIp(lastLong, version),
+                        maskCidr: `/${req.cidr}`,
+                        maskDecimal: formatIp(calculatedMaskLong, version)
+                    });
+
+                    usedIps += req.allocatedIps;
+                }
+
+                let freeSpace = totalMajorIps - usedIps;
+                let usagePercent = Number((usedIps * 10000n) / totalMajorIps) / 100;
+
+                setResults({
+                    version,
+                    allocations: finalResults,
+                    freeSpace: freeSpace,
+                    totalSpace: totalMajorIps,
+                    usagePercent: usagePercent,
+                    majorNetworkFormatted: formatIp(majorNetworkLong, version) + '/' + maskData.cidr,
+                    treeRoot: rootNode // Pass full binary tree
+                });
+                showToast(`VLSM plan built successfully`);
+            };
+
+            const displayedResults = useMemo(() => {
+                return sortData(results?.allocations, sortConfig);
+            }, [results, sortConfig]);
+
+            const copyToExcel = () => {
+                if (!displayedResults) return;
+                let text = "Name\tRequested Size\tAllocated IPs\tSubnet\tSubnet Mask\tMask (CIDR)\tUsable Range\tBroadcast\n";
+                text += displayedResults.map(r => `${r.name}\t${r.sizeLabel}\t${r.allocatedIps}\t${r.network}\t${r.maskDecimal}\t${r.maskCidr}\t${r.firstUsable} - ${r.lastUsable}\t${r.broadcast}`).join('\n');
+                executeCopy(text, 'VLSM plan copied to Excel format!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">VLSM Planner & Visualizer</strong>
+                            <ul className="list-disc pl-4 space-y-1 opacity-90">
+                                <li><strong>Full IPv4 & IPv6 Support:</strong> Slice both standard and 128-bit subnets accurately on bit boundaries without overlaps.</li>
+                                <li><strong>Dual Visualizations:</strong> Toggle between the mathematically accurate Binary Treemap (to see bit splits) and the standard Linear Bar (to see exact proportions).</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-8">
+                        {/* Input Section */}
+                        <div className="lg:col-span-5 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col">
+                            <h3 className="font-bold text-slate-800 dark:text-slate-100 mb-4 pb-2 border-b border-slate-100 dark:border-slate-700/50">1. Major Network</h3>
+                            <div className="mb-2">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Parent Block (CIDR)</label>
+                                <input 
+                                    type="text" 
+                                    value={majorNetwork} 
+                                    onChange={(e) => setMajorNetwork(e.target.value)} 
+                                    onKeyDown={(e) => e.key === 'Enter' && calculateVlsm()}
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" 
+                                    placeholder="e.g. 192.168.1.0/24 or 2001:db8::/48" 
+                                />
+                            </div>
+                            <HistoryPills history={history} onClear={clearHistory} onSelect={setMajorNetwork} />
+
+                            <div className="flex justify-between items-center mb-2 mt-6 pb-2 border-b border-slate-100 dark:border-slate-700/50">
+                                <h3 className="font-bold text-slate-800 dark:text-slate-100">2. Subnets Needed</h3>
+                                <button onClick={addSubnet} className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-700 p-1.5 rounded transition-colors" title="Add Requirement">
+                                    <PlusIcon />
+                                </button>
+                            </div>
+                            
+                            {/* Column Headers for Input Array */}
+                            <div className="flex text-xs font-semibold text-slate-500 dark:text-slate-400 mb-2 px-1 gap-2">
+                                <div className="flex-1">Description</div>
+                                <div className="w-24">Type</div>
+                                <div className="w-20">Size</div>
+                                <div className="w-14">Qty</div>
+                                <div className="w-6"></div>
+                            </div>
+
+                            <div className="space-y-2 flex-1 overflow-y-auto pr-1 custom-scrollbar min-h-[200px] max-h-[300px]">
+                                {subnets.map((subnet) => (
+                                    <div key={subnet.id} className="flex items-center gap-2 group">
+                                        <div className="flex-1">
+                                            <input 
+                                                type="text" 
+                                                value={subnet.name} 
+                                                onChange={(e) => updateSubnet(subnet.id, 'name', e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && calculateVlsm()}
+                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-500"
+                                                placeholder="Name"
+                                            />
+                                        </div>
+                                        <div className="w-24">
+                                            <select
+                                                value={subnet.type}
+                                                onChange={(e) => updateSubnet(subnet.id, 'type', e.target.value)}
+                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-500 appearance-none cursor-pointer"
+                                            >
+                                                <option value="hosts">Req. IPs</option>
+                                                <option value="cidr">CIDR (/x)</option>
+                                            </select>
+                                        </div>
+                                        <div className="w-20">
+                                            <input 
+                                                type="number" 
+                                                min="0"
+                                                value={subnet.value} 
+                                                onChange={(e) => updateSubnet(subnet.id, 'value', e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && calculateVlsm()}
+                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm px-2 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-500"
+                                                placeholder={subnet.type === 'hosts' ? 'IPs' : 'e.g. 24'}
+                                            />
+                                        </div>
+                                        <div className="w-14 relative flex items-center">
+                                            <span className="absolute left-1.5 text-slate-400 text-xs">x</span>
+                                            <input 
+                                                type="number" 
+                                                min="1"
+                                                value={subnet.quantity} 
+                                                onChange={(e) => updateSubnet(subnet.id, 'quantity', e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && calculateVlsm()}
+                                                className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded text-sm pl-4 pr-1 py-1.5 text-slate-800 dark:text-slate-100 focus:outline-none focus:border-blue-500 dark:focus:border-blue-500"
+                                            />
+                                        </div>
+                                        <button onClick={() => removeSubnet(subnet.id)} className="w-6 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100 p-1 flex justify-center">
+                                            <TrashIcon />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="mt-4 pt-4 border-t border-slate-100 dark:border-slate-700/50">
+                                <button onClick={calculateVlsm} className="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold shadow-sm transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800">Build VLSM Plan</button>
+                                {error && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-start gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>{error}</span></div>}
+                            </div>
+                        </div>
+
+                        {/* Visual & Table Results Section */}
+                        <div className="lg:col-span-7">
+                            {results && (
+                                <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in flex flex-col h-full">
+                                    <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                        <div>
+                                            <h3 className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">VLSM Allocation Map</h3>
+                                            <div className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Parent: {results.majorNetworkFormatted} <span className="mx-1">•</span> Utilized: {results.usagePercent}% <span className="mx-1">•</span> <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider border border-blue-200 dark:border-blue-800">IPv{results.version}</span></div>
+                                        </div>
+                                        
+                                        <div className="flex items-center gap-3 w-full sm:w-auto">
+                                            {/* Visual Toggle */}
+                                            <div className="flex bg-slate-200/50 dark:bg-slate-700/50 p-1 rounded-lg gap-1">
+                                                <button 
+                                                    onClick={() => setVisualMode('treemap')} 
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${visualMode === 'treemap' ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                                                >
+                                                    Treemap
+                                                </button>
+                                                <button 
+                                                    onClick={() => setVisualMode('linear')} 
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${visualMode === 'linear' ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                                                >
+                                                    Linear
+                                                </button>
+                                            </div>
+
+                                            <button onClick={copyToExcel} className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm whitespace-nowrap">
+                                                <ExcelIcon /> Copy
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Map Display */}
+                                    <div className="p-6 border-b border-slate-100 dark:border-slate-700/50">
+                                        {visualMode === 'treemap' ? (
+                                            <div className="w-full h-48 md:h-64 rounded-lg overflow-hidden shadow-inner bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 relative">
+                                                <SubnetTree node={results.treeRoot} version={results.version} />
+                                            </div>
+                                        ) : (
+                                            <div className="w-full h-12 flex rounded-lg overflow-hidden shadow-inner bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 relative group">
+                                                {results.allocations.map((alloc, idx) => {
+                                                    const pct = Number((alloc.allocatedIps * 10000n) / results.totalSpace) / 100;
+                                                    return (
+                                                        <div 
+                                                            key={idx}
+                                                            className={`${alloc.colorClass} h-full flex items-center justify-center text-white text-xs font-bold overflow-hidden transition-all hover:opacity-90 cursor-help border-r border-white/20`}
+                                                            style={{ width: `${pct}%` }}
+                                                            title={`${alloc.name}\n${formatIp(alloc.networkLong, results.version)}/${alloc.cidr}`}
+                                                        >
+                                                            {pct > 5 && alloc.name}
+                                                        </div>
+                                                    )
+                                                })}
+                                                {results.freeSpace > 0n && (
+                                                    <div 
+                                                        className="h-full flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs font-bold overflow-hidden cursor-help striped-bg"
+                                                        style={{ width: `${Number((results.freeSpace * 10000n) / results.totalSpace) / 100}%` }}
+                                                        title={`Free Space\nUnallocated IPs: ${results.freeSpace}`}
+                                                    >
+                                                        {Number((results.freeSpace * 10000n) / results.totalSpace) / 100 > 5 && 'Free Space'}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                        <div className="flex justify-between text-xs text-slate-400 dark:text-slate-500 mt-2 px-1 font-mono">
+                                            <span>{formatIp(results.treeRoot.networkLong, results.version)}</span>
+                                            <span>{results.freeSpace > 0n ? `${results.freeSpace} IPs free` : 'Fully Allocated'}</span>
+                                        </div>
+                                    </div>
+
+                                    {/* Tabular Data */}
+                                    <div className="overflow-x-auto flex-1">
+                                        <table className="w-full text-left text-sm whitespace-nowrap">
+                                            <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 border-b border-slate-200 dark:border-slate-700">
+                                                <tr>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300">Color</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('name', sortConfig, setSortConfig)}>Subnet Name {getSortIcon('name', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('sizeLabel', sortConfig, setSortConfig)}>Req. Size {getSortIcon('sizeLabel', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('allocatedIps', sortConfig, setSortConfig)}>Allocated IPs {getSortIcon('allocatedIps', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('network', sortConfig, setSortConfig)}>Network Address {getSortIcon('network', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300">Usable Range</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                                                {displayedResults.map((row, idx) => {
+                                                    return (
+                                                        <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                                            <td className="p-3">
+                                                                <div className={`w-4 h-4 rounded-full ${colors[row.originalId % colors.length]} shadow-sm`}></div>
+                                                            </td>
+                                                            <td className="p-3 font-medium text-slate-700 dark:text-slate-200">{row.name}</td>
+                                                            <td className="p-3 text-slate-500 dark:text-slate-400">{row.sizeLabel}</td>
+                                                            <td className="p-3 text-emerald-600 dark:text-emerald-400 font-medium">{row.allocatedIps.toString()}</td>
+                                                            <td className="p-3 text-blue-700 dark:text-blue-400 font-mono font-medium flex items-center gap-2 group">
+                                                                <span>{row.network}{row.maskCidr}</span>
+                                                                <button onClick={() => executeCopy(`${row.network}${row.maskCidr}`, 'Network copied!', showToast)} className="text-slate-400 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"><CopyIcon /></button>
+                                                            </td>
+                                                            <td className="p-3 text-slate-600 dark:text-slate-400 font-mono text-xs">{row.firstUsable} - {row.lastUsable}</td>
+                                                        </tr>
+                                                    )
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            )}
+                            
+                            {!results && !error && (
+                                <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 border-dashed rounded-xl h-full flex items-center justify-center p-12 text-center text-slate-400 dark:text-slate-500">
+                                    <div className="max-w-xs">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4 text-slate-300 dark:text-slate-600" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 17 22 12"></polyline></svg>
+                                        <p>Enter your major network and subnet requirements, then build your plan to see the visual allocation map.</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function Generator({ showToast }) {
+            const { history, addHistory, clearHistory } = useHistory('gen_history');
+            const [genMode, setGenMode] = useState('network');
+            const [genIpInput, setGenIpInput] = useState('192.168.1.0');
+            const [genMaskInput, setGenMaskInput] = useState('24');
+            const [rangeStartIp, setRangeStartIp] = useState('192.168.1.0');
+            const [rangeEndIp, setRangeEndIp] = useState('192.168.1.255');
+            const [targetMaskInput, setTargetMaskInput] = useState('26');
+            const [genResults, setGenResults] = useState(null);
+            const [genError, setGenError] = useState(null);
+            const [genSortConfig, setGenSortConfig] = useState({ key: 'no', direction: 'asc' });
+            const [filterText, setFilterText] = useState('');
+
+            const displayedGenResults = useMemo(() => {
+                let data = genResults;
+                if (data && filterText) {
+                    const lowerFilter = filterText.toLowerCase();
+                    data = data.filter(row => 
+                        Object.values(row).some(val => String(val).toLowerCase().includes(lowerFilter))
+                    );
+                }
+                return sortData(data, genSortConfig);
+            }, [genResults, genSortConfig, filterText]);
+
+            const handleIpChange = (e, setIp, setMask) => {
+                const val = e.target.value;
+                if (val.includes('/')) {
+                    const [ip, mask] = val.split('/');
+                    setIp(ip.trim());
+                    if(setMask) setMask(mask.trim());
+                } else {
+                    setIp(val);
+                }
+            };
+
+            const generateSubnets = () => {
+                setGenError(null);
+                const contextIp = genMode === 'network' ? parseIp(genIpInput) : parseIp(rangeStartIp);
+                if (!contextIp) { setGenError("Invalid IP Address format."); setGenResults(null); return; }
+                const version = contextIp.version;
+
+                const targetMaskData = parseMask(targetMaskInput, version);
+                if (targetMaskData === null) { setGenError(`Invalid Target Subnet Mask for IPv${version}.`); setGenResults(null); return; }
+
+                if (genMode === 'network') {
+                    addHistory(`${genIpInput}/${genMaskInput}`);
+                }
+
+                const targetCidr = targetMaskData.cidr;
+                const targetMaskStr = formatIp(targetMaskData.long, version);
+                const maxBits = version === 6 ? 128n : 32n;
+                const step = 1n << (maxBits - BigInt(targetCidr)); 
+                let results = [];
+
+                if (genMode === 'network') {
+                    const majorMaskData = parseMask(genMaskInput, version);
+                    if (majorMaskData === null) { setGenError("Invalid Major Subnet Mask."); setGenResults(null); return; }
+
+                    const majorCidr = majorMaskData.cidr;
+                    if (targetCidr < majorCidr) { setGenError("Target mask must be smaller (larger CIDR number) than major mask."); setGenResults(null); return; }
+
+                    const numSubnets = 1n << BigInt(targetCidr - majorCidr);
+                    if (numSubnets > 4096n) { setGenError(`Too many subnets (${numSubnets}). Limit to 4096 max.`); setGenResults(null); return; }
+
+                    const majorNetworkLong = (contextIp.long & majorMaskData.long);
+                    
+                    for (let i = 0n; i < numSubnets; i++) {
+                        const netLong = majorNetworkLong + (i * step);
+                        const bcastLong = netLong + step - 1n;
+                        
+                        let firstLong, lastLong;
+                        if (version === 4) {
+                            firstLong = targetCidr >= 31 ? netLong : netLong + 1n;
+                            lastLong = targetCidr === 32 ? netLong : (targetCidr === 31 ? bcastLong : bcastLong - 1n);
+                        } else {
+                            firstLong = netLong;
+                            lastLong = bcastLong;
+                        }
+
+                        results.push({ no: Number(i + 1n), network: formatIp(netLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
+                    }
+                } else {
+                    const endIpData = parseIp(rangeEndIp);
+                    if (!endIpData || endIpData.version !== version) { setGenError("End IP is invalid or version mismatch."); setGenResults(null); return; }
+
+                    const startLong = contextIp.long;
+                    const endLong = endIpData.long;
+
+                    if (startLong > endLong) { setGenError("Start IP must be <= End IP."); setGenResults(null); return; }
+
+                    let currentNetLong = startLong & targetMaskData.long;
+                    let count = 0n;
+
+                    while (currentNetLong <= endLong) {
+                        if (count >= 4096n) { setGenError("Output capped at 4096 subnets."); break; }
+
+                        const bcastLong = currentNetLong + step - 1n;
+                        let firstLong, lastLong;
+                        if (version === 4) {
+                            firstLong = targetCidr >= 31 ? currentNetLong : currentNetLong + 1n;
+                            lastLong = targetCidr === 32 ? currentNetLong : (targetCidr === 31 ? bcastLong : bcastLong - 1n);
+                        } else {
+                            firstLong = currentNetLong;
+                            lastLong = bcastLong;
+                        }
+
+                        results.push({ no: Number(count + 1n), network: formatIp(currentNetLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
+
+                        currentNetLong = currentNetLong + step;
+                        count++;
+                        if (currentNetLong < step) break; 
+                    }
+                }
+                setGenResults(results);
+                showToast(`Generated ${results.length} subnets`);
+            };
+
+            const copyToExcel = () => {
+                if (!displayedGenResults) return;
+                let text = "No.\tSubnet\tMask (Decimal)\tMask (CIDR)\t1st Usable IP\tLast Usable IP\tBroadcast\n";
+                text += displayedGenResults.map(r => `${r.no}\t${r.network}\t${r.maskDecimal}\t${r.maskCidr}\t${r.firstUsable}\t${r.lastUsable}\t${r.broadcast}`).join('\n');
+                executeCopy(text, 'Table copied to Excel format!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">How to use the Subnet Generator</strong>
+                            <ul className="list-disc pl-4 space-y-1 opacity-90">
+                                <li><strong>By Major Network:</strong> Breaks a large network (e.g., <code>10.0.0.0/8</code>) into many smaller subnets of a target size.</li>
+                                <li><strong>By IP Range:</strong> Finds all subnets of a specific target size that fit exactly between a Start IP and End IP.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 mb-8">
+                        <div className="flex gap-6 mb-5">
+                            <label className="flex items-center gap-2 cursor-pointer group">
+                                <input type="radio" checked={genMode === 'network'} onChange={() => setGenMode('network')} className="text-blue-600 focus:ring-blue-500 cursor-pointer" />
+                                <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">By Major Network</span>
+                            </label>
+                            <label className="flex items-center gap-2 cursor-pointer group">
+                                <input type="radio" checked={genMode === 'range'} onChange={() => setGenMode('range')} className="text-blue-600 focus:ring-blue-500 cursor-pointer" />
+                                <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">By IP Range</span>
+                            </label>
+                        </div>
+                        <div className="flex flex-wrap gap-4 items-end">
+                            {genMode === 'network' ? (
+                                <React.Fragment>
+                                    <div className="flex-1 min-w-[150px]">
+                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Major Network IP</label>
+                                        <input type="text" value={genIpInput} onChange={(e) => handleIpChange(e, setGenIpInput, setGenMaskInput)} onKeyDown={(e) => e.key === 'Enter' && generateSubnets()} className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" placeholder="e.g. 10.0.0.0/8" />
+                                    </div>
+                                    <div className="hidden sm:block text-2xl font-light text-slate-300 dark:text-slate-600 mb-2">/</div>
+                                    <div className="w-24">
+                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Major Mask</label>
+                                        <input type="text" value={genMaskInput} onChange={(e) => setGenMaskInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && generateSubnets()} className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+                                    </div>
+                                </React.Fragment>
+                            ) : (
+                                <React.Fragment>
+                                    <div className="flex-1 min-w-[150px]">
+                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Start IP</label>
+                                        <input type="text" value={rangeStartIp} onChange={(e) => setRangeStartIp(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && generateSubnets()} className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+                                    </div>
+                                    <div className="hidden sm:block text-xl font-light text-slate-300 dark:text-slate-600 mb-2">-</div>
+                                    <div className="flex-1 min-w-[150px]">
+                                        <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">End IP</label>
+                                        <input type="text" value={rangeEndIp} onChange={(e) => setRangeEndIp(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && generateSubnets()} className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+                                    </div>
+                                </React.Fragment>
+                            )}
+                            <div className="hidden md:block text-xl font-light text-slate-300 dark:text-slate-600 mb-2 px-2">➔</div>
+                            <div className="w-24">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Target Mask</label>
+                                <input type="text" value={targetMaskInput} onChange={(e) => setTargetMaskInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && generateSubnets()} className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" />
+                            </div>
+                            <button onClick={generateSubnets} className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold shadow-sm transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800">Generate</button>
+                        </div>
+                        {genError && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>{genError}</div>}
+                        
+                        {genMode === 'network' && <HistoryPills history={history} onClear={clearHistory} onSelect={(val) => {
+                            if (val.includes('/')) {
+                                const [ip, mask] = val.split('/');
+                                setGenIpInput(ip); setGenMaskInput(mask);
+                            }
+                        }} />}
+                    </div>
+
+                    {displayedGenResults && (
+                        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                <span className="text-sm text-slate-600 dark:text-slate-300 font-medium">Generated <strong className="text-slate-900 dark:text-slate-100">{displayedGenResults.length}</strong> subnets {filterText && <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded text-xs ml-2">Filtered</span>}</span>
+                                <div className="flex items-center gap-3 w-full sm:w-auto">
+                                    <div className="relative flex-1 sm:flex-none">
+                                        <svg className="absolute left-2.5 top-2 text-slate-400 dark:text-slate-500" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                        <input 
+                                            type="text" 
+                                            placeholder="Filter..." 
+                                            value={filterText}
+                                            onChange={(e) => setFilterText(e.target.value)}
+                                            className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 pl-8 pr-3 py-1.5 text-sm rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-48 transition-shadow"
+                                        />
+                                    </div>
+                                    <button onClick={copyToExcel} className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shadow-sm whitespace-nowrap">
+                                        <ExcelIcon /> Copy
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="overflow-x-auto max-h-[500px]">
+                                <table className="w-full text-left text-sm whitespace-nowrap">
+                                    <thead className="bg-white dark:bg-slate-800 sticky top-0 shadow-sm z-10">
+                                        <tr className="border-b border-slate-200 dark:border-slate-700/50">
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('no', genSortConfig, setGenSortConfig)}>No. {getSortIcon('no', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('network', genSortConfig, setGenSortConfig)}>Subnet {getSortIcon('network', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskDecimal', genSortConfig, setGenSortConfig)}>Mask (Dec) {getSortIcon('maskDecimal', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskCidr', genSortConfig, setGenSortConfig)}>CIDR {getSortIcon('maskCidr', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('firstUsable', genSortConfig, setGenSortConfig)}>1st Usable IP {getSortIcon('firstUsable', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('lastUsable', genSortConfig, setGenSortConfig)}>Last Usable IP {getSortIcon('lastUsable', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('broadcast', genSortConfig, setGenSortConfig)}>Broadcast {getSortIcon('broadcast', genSortConfig)}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                                        {displayedGenResults.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                                <td className="p-3 text-slate-500 dark:text-slate-400">{row.no}</td>
+                                                <td className="p-3 text-blue-700 dark:text-blue-400 font-mono font-medium">{row.network}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-400 font-mono text-xs">{row.maskDecimal}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-mono font-medium">{row.maskCidr}</td>
+                                                <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.firstUsable}</td>
+                                                <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.lastUsable}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-mono">{row.broadcast}</td>
+                                            </tr>
+                                        ))}
+                                        {displayedGenResults.length === 0 && (
+                                            <tr><td colSpan="7" className="p-8 text-center text-slate-400 dark:text-slate-500">No matching subnets found for "{filterText}".</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function Summarizer({ showToast }) {
+            const [ipListInput, setIpListInput] = useState("10.135.8.20\n192.168.1.10 - 192.168.1.25\n2001:db8::1 - 2001:db8::50");
+            const [targetMaskInput, setTargetMaskInput] = useState("");
+            const [ipListResults, setIpListResults] = useState(null);
+            const [ipListError, setIpListError] = useState(null);
+            const [ipListSortConfig, setIpListSortConfig] = useState({ key: 'no', direction: 'asc' });
+            const [filterText, setFilterText] = useState('');
+
+            const displayedIpListResults = useMemo(() => {
+                let data = ipListResults;
+                if (data && filterText) {
+                    const lowerFilter = filterText.toLowerCase();
+                    data = data.filter(row => 
+                        Object.values(row).some(val => String(val).toLowerCase().includes(lowerFilter))
+                    );
+                }
+                return sortData(data, ipListSortConfig);
+            }, [ipListResults, ipListSortConfig, filterText]);
+
+            const generateFromIpsList = () => {
+                setIpListError(null);
+                const rawTokens = ipListInput.split(/[\r\n,]+/).map(t => t.trim()).filter(t => t);
+                
+                if (rawTokens.length === 0) { setIpListError("No valid IP addresses or ranges."); setIpListResults(null); return; }
+
+                let ranges = [];
+                let detectedVersion = null;
+
+                for (const token of rawTokens) {
+                    let startData, endData;
+                    if (token.includes('-')) {
+                        const parts = token.split('-').map(s => s.trim());
+                        if (parts.length !== 2) continue;
+                        startData = parseIp(parts[0]);
+                        endData = parseIp(parts[1]);
+                    } else {
+                        startData = parseIp(token);
+                        endData = startData;
+                    }
+
+                    if (!startData || !endData || startData.version !== endData.version) {
+                        setIpListError(`Invalid or mismatched IP format found: "${token}"`); setIpListResults(null); return; 
+                    }
+                    if (startData.long > endData.long) {
+                        setIpListError(`Start IP must be <= End IP: "${token}"`); setIpListResults(null); return;
+                    }
+
+                    if (!detectedVersion) detectedVersion = startData.version;
+                    else if (detectedVersion !== startData.version) {
+                        setIpListError(`Mixed IPv4 and IPv6 addresses not supported in Summarization simultaneously.`); setIpListResults(null); return;
+                    }
+
+                    ranges.push([startData.long, endData.long]);
+                }
+
+                let optionalTargetMask = null;
+                if (targetMaskInput.trim() !== '') {
+                    optionalTargetMask = parseMask(targetMaskInput, detectedVersion);
+                    if (!optionalTargetMask) {
+                        setIpListError(`Invalid Target Subnet Mask for IPv${detectedVersion}.`); 
+                        setIpListResults(null); 
+                        return;
+                    }
+                }
+
+                ranges.sort((a, b) => a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0));
+
+                let mergedRanges = [];
+                let currentRange = ranges[0];
+                for (let i = 1; i < ranges.length; i++) {
+                    if (ranges[i][0] <= currentRange[1] + 1n) currentRange[1] = currentRange[1] > ranges[i][1] ? currentRange[1] : ranges[i][1];
+                    else { mergedRanges.push(currentRange); currentRange = ranges[i]; }
+                }
+                mergedRanges.push(currentRange);
+
+                let cidrMap = new Map();
+                const maxBits = BigInt(detectedVersion === 6 ? 128 : 32);
+
+                if (optionalTargetMask) {
+                    const targetCidr = optionalTargetMask.cidr;
+                    const maskLong = optionalTargetMask.long;
+                    const step = targetCidr === 0 ? (1n << maxBits) : (1n << (maxBits - BigInt(targetCidr)));
+
+                    for (const [start, end] of mergedRanges) {
+                        let current = start;
+                        while (current <= end) {
+                            let netLong = current & maskLong;
+                            let bcastLong = targetCidr === 0 ? ((1n << maxBits) - 1n) : (netLong + step - 1n);
+                            let chunkEnd = end < bcastLong ? end : bcastLong;
+                            let usedCount = chunkEnd - current + 1n;
+
+                            const key = `${netLong}/${targetCidr}`;
+                            if (!cidrMap.has(key)) {
+                                cidrMap.set(key, { network: netLong, cidr: targetCidr, usedStart: current, usedEnd: chunkEnd, usedCount: usedCount });
+                            } else {
+                                let existing = cidrMap.get(key);
+                                existing.usedStart = existing.usedStart < current ? existing.usedStart : current;
+                                existing.usedEnd = existing.usedEnd > chunkEnd ? existing.usedEnd : chunkEnd;
+                                existing.usedCount += usedCount;
+                            }
+                            
+                            current = bcastLong + 1n;
+                            if (current > ((1n << maxBits) - 1n)) break;
+                        }
+                    }
+                } else {
+                    for (const [start, end] of mergedRanges) {
+                        let shift = 0n;
+                        let tempXor = start ^ end;
+                        while (tempXor > 0n) { tempXor >>= 1n; shift++; }
+                        
+                        let targetCidr = Number(maxBits - shift);
+                        let maskLong = targetCidr === 0 ? 0n : ((1n << maxBits) - 1n) ^ ((1n << shift) - 1n);
+                        let netLong = start & maskLong;
+
+                        let usedIPsCount = end - start + 1n;
+
+                        const key = `${netLong}/${targetCidr}`;
+                        if (!cidrMap.has(key)) {
+                            cidrMap.set(key, { network: netLong, cidr: targetCidr, usedStart: start, usedEnd: end, usedCount: usedIPsCount });
+                        } else {
+                            let existing = cidrMap.get(key);
+                            existing.usedStart = existing.usedStart < start ? existing.usedStart : start;
+                            existing.usedEnd = existing.usedEnd > end ? existing.usedEnd : end;
+                            existing.usedCount += usedIPsCount;
+                        }
+                    }
+                }
+
+                let cidrResults = Array.from(cidrMap.values());
+                cidrResults.sort((a, b) => a.network !== b.network ? (a.network < b.network ? -1 : 1) : a.cidr - b.cidr);
+
+                const results = cidrResults.map((item, idx) => {
+                    const step = item.cidr === 0 ? (1n << maxBits) : (1n << (maxBits - BigInt(item.cidr)));
+                    const bcastLong = item.cidr === 0 ? ((1n << maxBits) - 1n) : (item.network + step - 1n);
+                    const maskLong = item.cidr === 0 ? 0n : ((1n << maxBits) - 1n) ^ ((1n << (maxBits - BigInt(item.cidr))) - 1n);
+                    const targetMaskStr = formatIp(maskLong, detectedVersion);
+
+                    let firstLong, lastLong;
+                    if (detectedVersion === 4) {
+                        firstLong = item.cidr >= 31 ? item.network : (item.cidr === 0 ? 1n : item.network + 1n);
+                        lastLong = item.cidr === 32 ? item.network : (item.cidr === 31 ? bcastLong : (item.cidr === 0 ? ((1n << 32n) - 2n) : bcastLong - 1n));
+                    } else {
+                        firstLong = item.network;
+                        lastLong = bcastLong;
+                    }
+
+                    return {
+                        no: idx + 1, network: formatIp(item.network, detectedVersion), maskDecimal: targetMaskStr, maskCidr: `/${item.cidr}`,
+                        firstUsed: formatIp(item.usedStart, detectedVersion), lastUsed: formatIp(item.usedEnd, detectedVersion),
+                        usedCount: item.usedCount.toString(), freeCount: (step - item.usedCount).toString(),
+                        firstUsable: formatIp(firstLong, detectedVersion), lastUsable: formatIp(lastLong, detectedVersion), broadcast: formatIp(bcastLong, detectedVersion)
+                    };
+                });
+
+                setIpListResults(results);
+                showToast(`Summarized into ${results.length} blocks`);
+            };
+
+            const copyToExcel = () => {
+                if (!displayedIpListResults) return;
+                let text = "No.\tSubnet\tMask (Decimal)\tMask (CIDR)\t1st Used IP\tLast Used IP\tUsed IPs\tFree IPs\t1st Usable IP\tLast Usable IP\tBroadcast\n";
+                text += displayedIpListResults.map(r => `${r.no}\t${r.network}\t${r.maskDecimal}\t${r.maskCidr}\t${r.firstUsed}\t${r.lastUsed}\t${r.usedCount}\t${r.freeCount}\t${r.firstUsable}\t${r.lastUsable}\t${r.broadcast}`).join('\n');
+                executeCopy(text, 'Summarized table copied to Excel!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">How to use IP Summarization (Supernetting)</strong>
+                            <ul className="list-disc pl-4 space-y-1 opacity-90">
+                                <li>Takes a messy list of IPs/Ranges and computes the tightest optimal CIDR blocks needed to contain them all.</li>
+                                <li><strong>Target Mask:</strong> Leave it blank for the tightest possible fit. Or, enter a Target Mask (like <code>24</code>) to force it to group the IPs into chunks of exactly that size.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 mb-8">
+                        <div className="flex flex-col gap-4">
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2 flex justify-between">
+                                    <span>List of IP Addresses or Ranges</span>
+                                    <span className="font-normal text-slate-400 dark:text-slate-500">Comma, space, or newline separated</span>
+                                </label>
+                                <textarea 
+                                    value={ipListInput} 
+                                    onChange={(e) => setIpListInput(e.target.value)} 
+                                    onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && generateFromIpsList()}
+                                    className="w-full h-36 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg p-3 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 font-mono shadow-inner transition-shadow custom-scrollbar" 
+                                    placeholder="Example:&#10;192.168.1.15&#10;10.0.0.1 - 10.0.0.50&#10;2001:db8::1/64" 
+                                />
+                            </div>
+                            <div className="flex flex-wrap items-end gap-4 mt-2">
+                                <div>
+                                    <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Target Mask <span className="font-normal text-slate-400 dark:text-slate-500">(Optional)</span></label>
+                                    <input type="text" value={targetMaskInput} onChange={(e) => setTargetMaskInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && generateFromIpsList()} className="w-32 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="e.g. 24" />
+                                </div>
+                                <button onClick={generateFromIpsList} className="bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-6 py-2 rounded-lg text-sm font-semibold shadow-sm transition-colors focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-slate-800">Summarize IPs</button>
+                                <span className="text-sm text-slate-500 dark:text-slate-400 pb-1.5">Leave mask blank for auto-sizing. (Use <strong>Ctrl+Enter</strong> in text box to calc)</span>
+                            </div>
+                        </div>
+                        {ipListError && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>{ipListError}</div>}
+                    </div>
+
+                    {displayedIpListResults && (
+                        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                                <span className="text-sm text-slate-600 dark:text-slate-300 font-medium">Summarized into <strong className="text-slate-900 dark:text-slate-100">{displayedIpListResults.length}</strong> blocks {filterText && <span className="text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 px-2 py-0.5 rounded text-xs ml-2">Filtered</span>}</span>
+                                <div className="flex items-center gap-3 w-full sm:w-auto">
+                                    <div className="relative flex-1 sm:flex-none">
+                                        <svg className="absolute left-2.5 top-2 text-slate-400 dark:text-slate-500" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                        <input 
+                                            type="text" 
+                                            placeholder="Filter..." 
+                                            value={filterText}
+                                            onChange={(e) => setFilterText(e.target.value)}
+                                            className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 text-slate-800 dark:text-slate-100 pl-8 pr-3 py-1.5 text-sm rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-48 transition-shadow"
+                                        />
+                                    </div>
+                                    <button onClick={copyToExcel} className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shadow-sm whitespace-nowrap">
+                                        <ExcelIcon /> Copy
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="overflow-x-auto max-h-[500px]">
+                                <table className="w-full text-left text-sm whitespace-nowrap">
+                                    <thead className="bg-white dark:bg-slate-800 sticky top-0 shadow-sm z-10">
+                                        <tr className="border-b border-slate-200 dark:border-slate-700/50">
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('no', ipListSortConfig, setIpListSortConfig)}>No. {getSortIcon('no', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('network', ipListSortConfig, setIpListSortConfig)}>Subnet {getSortIcon('network', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskDecimal', ipListSortConfig, setIpListSortConfig)}>Mask (Dec) {getSortIcon('maskDecimal', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskCidr', ipListSortConfig, setIpListSortConfig)}>CIDR {getSortIcon('maskCidr', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('firstUsed', ipListSortConfig, setIpListSortConfig)}>1st Used IP {getSortIcon('firstUsed', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('lastUsed', ipListSortConfig, setIpListSortConfig)}>Last Used IP {getSortIcon('lastUsed', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('usedCount', ipListSortConfig, setIpListSortConfig)}>Used IPs {getSortIcon('usedCount', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('freeCount', ipListSortConfig, setIpListSortConfig)}>Free IPs {getSortIcon('freeCount', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('firstUsable', ipListSortConfig, setIpListSortConfig)}>1st Usable IP {getSortIcon('firstUsable', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('lastUsable', ipListSortConfig, setIpListSortConfig)}>Last Usable IP {getSortIcon('lastUsable', ipListSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('broadcast', ipListSortConfig, setIpListSortConfig)}>Broadcast {getSortIcon('broadcast', ipListSortConfig)}</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                                        {displayedIpListResults.map((row, idx) => (
+                                            <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                                <td className="p-3 text-slate-500 dark:text-slate-400">{row.no}</td>
+                                                <td className="p-3 text-blue-700 dark:text-blue-400 font-mono font-medium">{row.network}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-400 font-mono text-xs">{row.maskDecimal}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-mono font-medium">{row.maskCidr}</td>
+                                                <td className="p-3 text-purple-600 dark:text-purple-400 font-mono">{row.firstUsed}</td>
+                                                <td className="p-3 text-purple-600 dark:text-purple-400 font-mono">{row.lastUsed}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-medium">{row.usedCount}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-400">{row.freeCount}</td>
+                                                <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.firstUsable}</td>
+                                                <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.lastUsable}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-mono">{row.broadcast}</td>
+                                            </tr>
+                                        ))}
+                                        {displayedIpListResults.length === 0 && (
+                                            <tr><td colSpan="11" className="p-8 text-center text-slate-400 dark:text-slate-500">No matching subnets found for "{filterText}".</td></tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ==========================================
+        // FREE SPACE FINDER COMPONENT
+        // ==========================================
+        function FreeSpaceFinder({ showToast }) {
+            const { history, addHistory, clearHistory } = useHistory('free_space_history');
+            const [parentNetwork, setParentNetwork] = useState('10.0.0.0/8');
+            const [usedPrefixesInput, setUsedPrefixesInput] = useState('10.135.8.16/28\n10.135.1.16/28');
+            const [results, setResults] = useState(null);
+            const [error, setError] = useState(null);
+            const [sortConfig, setSortConfig] = useState({ key: 'network', direction: 'asc' });
+            const [displayFilter, setDisplayFilter] = useState('all'); // 'all', 'free', 'used'
+
+            const displayedResults = useMemo(() => {
+                if (!results) return null;
+                
+                // Filter
+                let filtered = results.allBlocks;
+                if (displayFilter === 'free') filtered = filtered.filter(b => b.type === 'Free');
+                if (displayFilter === 'used') filtered = filtered.filter(b => b.type === 'Used');
+
+                // Sort
+                return sortData(filtered, sortConfig);
+            }, [results, sortConfig, displayFilter]);
+
+            const calculateFreeSpace = () => {
+                setError(null);
+                
+                // 1. Parse Parent Network
+                const [parentIpStr, parentMaskStr] = parentNetwork.split('/');
+                if (!parentIpStr || !parentMaskStr) return setError("Parent network must be in CIDR format (e.g., 10.0.0.0/8)");
+                
+                const parentIpData = parseIp(parentIpStr);
+                if (!parentIpData) return setError("Invalid parent IP address.");
+                
+                const version = parentIpData.version;
+                const parentMaskData = parseMask(parentMaskStr, version);
+                if (!parentMaskData) return setError("Invalid parent CIDR mask.");
+                
+                addHistory(parentNetwork);
+
+                const maxBits = version === 6 ? 128 : 32;
+                const parentNetworkLong = parentIpData.long & parentMaskData.long;
+                const parentBroadcastLong = parentNetworkLong | ((1n << BigInt(maxBits - parentMaskData.cidr)) - 1n);
+
+                // 2. Parse Used Prefixes
+                const rawTokens = usedPrefixesInput.split(/[\r\n,]+/).map(t => t.trim()).filter(t => t);
+                let usedRanges = [];
+
+                for (const token of rawTokens) {
+                    if (token.includes('/')) {
+                        const [ipStr, maskStr] = token.split('/');
+                        const ipData = parseIp(ipStr);
+                        const maskData = parseMask(maskStr, version);
+                        if (ipData && maskData && ipData.version === version) {
+                            const netLong = ipData.long & maskData.long;
+                            const bcastLong = netLong | ((1n << BigInt(maxBits - maskData.cidr)) - 1n);
+                            usedRanges.push([netLong, bcastLong]);
+                        }
+                    } else if (token.includes('-')) {
+                        const [startStr, endStr] = token.split('-');
+                        const startData = parseIp(startStr);
+                        const endData = parseIp(endStr);
+                        if (startData && endData && startData.version === version) {
+                            usedRanges.push([startData.long, endData.long]);
+                        }
+                    } else {
+                        // Single IP
+                        const ipData = parseIp(token);
+                        if (ipData && ipData.version === version) {
+                            usedRanges.push([ipData.long, ipData.long]);
+                        }
+                    }
+                }
+
+                // 3. Clamp Used Ranges to Parent Boundaries and Filter invalid
+                let clampedRanges = [];
+                for (const [start, end] of usedRanges) {
+                    let cStart = start < parentNetworkLong ? parentNetworkLong : start;
+                    let cEnd = end > parentBroadcastLong ? parentBroadcastLong : end;
+                    if (cStart <= cEnd) {
+                        clampedRanges.push([cStart, cEnd]);
+                    }
+                }
+
+                // 4. Sort and Merge Clamped Ranges
+                clampedRanges.sort((a, b) => a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0));
+                let mergedRanges = [];
+                if (clampedRanges.length > 0) {
+                    let current = clampedRanges[0];
+                    for (let i = 1; i < clampedRanges.length; i++) {
+                        if (clampedRanges[i][0] <= current[1] + 1n) {
+                            current[1] = current[1] > clampedRanges[i][1] ? current[1] : clampedRanges[i][1];
+                        } else {
+                            mergedRanges.push(current);
+                            current = clampedRanges[i];
+                        }
+                    }
+                    mergedRanges.push(current);
+                }
+
+                // 5. Calculate Gaps (Free Space)
+                let freeGaps = [];
+                let pointer = parentNetworkLong;
+
+                for (const [usedStart, usedEnd] of mergedRanges) {
+                    if (pointer < usedStart) {
+                        freeGaps.push([pointer, usedStart - 1n]);
+                    }
+                    pointer = usedEnd + 1n;
+                }
+                if (pointer <= parentBroadcastLong) {
+                    freeGaps.push([pointer, parentBroadcastLong]);
+                }
+
+                // 6. Convert both Gaps & Used spaces to perfectly aligned CIDR blocks
+                let allBlocks = [];
+                let totalFreeIps = 0n;
+                let totalUsedIps = 0n;
+
+                // Process Used Spaces
+                for (const [s, e] of mergedRanges) {
+                    const cidrsInRange = rangeToCidrs(s, e, maxBits);
+                    cidrsInRange.forEach(b => {
+                        allBlocks.push({ ...b, type: 'Used' });
+                        totalUsedIps += b.size;
+                    });
+                }
+
+                // Process Free Gaps
+                for (const [gapStart, gapEnd] of freeGaps) {
+                    const cidrsInRange = rangeToCidrs(gapStart, gapEnd, maxBits);
+                    cidrsInRange.forEach(b => {
+                        allBlocks.push({ ...b, type: 'Free' });
+                        totalFreeIps += b.size;
+                    });
+                }
+
+                // 7. Sort all combined blocks chronologically
+                allBlocks.sort((a, b) => a.networkLong < b.networkLong ? -1 : (a.networkLong > b.networkLong ? 1 : 0));
+
+                let finalFormattedBlocks = allBlocks.map((block, idx) => {
+                    return {
+                        no: idx + 1,
+                        network: formatIp(block.networkLong, version),
+                        maskCidr: `/${block.cidr}`,
+                        size: block.size,
+                        sizeFormatted: block.size.toString(),
+                        firstIp: formatIp(block.networkLong, version),
+                        lastIp: formatIp(block.networkLong + block.size - 1n, version),
+                        type: block.type,
+                        networkLong: block.networkLong // keeping for sorts
+                    }
+                });
+
+                const totalParentSpace = parentBroadcastLong - parentNetworkLong + 1n;
+                const utilization = Number((totalUsedIps * 10000n) / totalParentSpace) / 100;
+
+                setResults({
+                    version,
+                    totalSpace: totalParentSpace.toString(),
+                    usedSpace: totalUsedIps.toString(),
+                    freeSpace: totalFreeIps.toString(),
+                    utilization: utilization,
+                    allBlocks: finalFormattedBlocks
+                });
+                
+                showToast(`Mapped address space successfully`);
+            };
+
+            const copyToExcel = () => {
+                if (!displayedResults) return;
+                let text = "No.\tStatus\tSubnet\tCIDR\tTotal IPs\tStart IP\tEnd IP\n";
+                text += displayedResults.map(r => `${r.no}\t${r.type}\t${r.network}\t${r.maskCidr}\t${r.sizeFormatted}\t${r.firstIp}\t${r.lastIp}`).join('\n');
+                executeCopy(text, 'Space map table copied!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">Free Space Finder</strong>
+                            <p className="opacity-90 mb-1">Specify a large Parent Pool and paste in your currently assigned subnets. This tool maps out your entire address space logically, showing where your used blocks are and finding perfectly aligned free blocks in the gaps.</p>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-8">
+                        {/* INPUT SECTION */}
+                        <div className="lg:col-span-4 bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col">
+                            <div className="mb-4">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">Parent Network (CIDR)</label>
+                                <input 
+                                    type="text" 
+                                    value={parentNetwork} 
+                                    onChange={(e) => setParentNetwork(e.target.value)} 
+                                    onKeyDown={(e) => e.key === 'Enter' && calculateFreeSpace()}
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" 
+                                    placeholder="e.g. 10.0.0.0/8" 
+                                />
+                                <HistoryPills history={history} onClear={clearHistory} onSelect={setParentNetwork} />
+                            </div>
+
+                            <div className="flex-1 flex flex-col mb-4">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5 flex justify-between">
+                                    <span>Used Prefixes</span>
+                                </label>
+                                <textarea 
+                                    value={usedPrefixesInput} 
+                                    onChange={(e) => setUsedPrefixesInput(e.target.value)} 
+                                    onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && calculateFreeSpace()}
+                                    className="w-full flex-1 min-h-[150px] bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg p-3 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono shadow-inner custom-scrollbar" 
+                                    placeholder="e.g.&#10;10.135.8.16/28&#10;10.135.1.16/28" 
+                                />
+                            </div>
+
+                            <button onClick={calculateFreeSpace} className="w-full bg-blue-600 hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 text-white px-6 py-2.5 rounded-lg text-sm font-semibold shadow-sm transition-colors focus:ring-2 focus:ring-blue-500">Map Address Space</button>
+                            <div className="text-xs text-slate-400 text-center mt-2">Use Ctrl+Enter in text box to calculate</div>
+                            {error && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-start gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><span>{error}</span></div>}
+                        </div>
+
+                        {/* RESULTS SECTION */}
+                        <div className="lg:col-span-8 flex flex-col h-full">
+                            {results ? (
+                                <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col h-full animate-fade-in">
+                                    
+                                    {/* Stats Bar */}
+                                    <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 p-6 flex flex-col sm:flex-row justify-between items-center gap-4">
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full">
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Total Pool IPs</span>
+                                                <span className="text-lg font-bold text-slate-800 dark:text-slate-100">{results.totalSpace}</span>
+                                            </div>
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Allocated IPs</span>
+                                                <span className="text-lg font-bold text-rose-600 dark:text-rose-400">{results.usedSpace}</span>
+                                            </div>
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Free IPs</span>
+                                                <span className="text-lg font-bold text-emerald-600 dark:text-emerald-400">{results.freeSpace}</span>
+                                            </div>
+                                            <div className="flex flex-col">
+                                                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Utilization</span>
+                                                <span className="text-lg font-bold text-slate-800 dark:text-slate-100">{results.utilization}%</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Header & Filters & Copy */}
+                                    <div className="px-6 py-3 bg-white dark:bg-slate-800 flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-slate-100 dark:border-slate-700/50 gap-3">
+                                        <h3 className="font-bold text-slate-800 dark:text-slate-100 hidden md:block">Address Space Map</h3>
+                                        
+                                        <div className="flex items-center gap-3 w-full sm:w-auto">
+                                            {/* Filters */}
+                                            <div className="flex bg-slate-200/50 dark:bg-slate-700/50 p-1 rounded-lg gap-1">
+                                                <button 
+                                                    onClick={() => setDisplayFilter('all')} 
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${displayFilter === 'all' ? 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                                                >
+                                                    All Map
+                                                </button>
+                                                <button 
+                                                    onClick={() => setDisplayFilter('free')} 
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${displayFilter === 'free' ? 'bg-emerald-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                                                >
+                                                    Free Only
+                                                </button>
+                                                <button 
+                                                    onClick={() => setDisplayFilter('used')} 
+                                                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${displayFilter === 'used' ? 'bg-rose-500 text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}`}
+                                                >
+                                                    Used Only
+                                                </button>
+                                            </div>
+                                            <button onClick={copyToExcel} className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors shadow-sm whitespace-nowrap">
+                                                <ExcelIcon /> Copy
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Table */}
+                                    <div className="overflow-auto flex-1 custom-scrollbar" style={{maxHeight: '400px'}}>
+                                        <table className="w-full text-left text-sm whitespace-nowrap">
+                                            <thead className="bg-slate-50 dark:bg-slate-800/50 sticky top-0 shadow-sm z-10 border-b border-slate-200 dark:border-slate-700">
+                                                <tr>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300">No.</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300">Status</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer" onClick={() => requestSort('network', sortConfig, setSortConfig)}>Subnet {getSortIcon('network', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer" onClick={() => requestSort('size', sortConfig, setSortConfig)}>Total IPs {getSortIcon('size', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer" onClick={() => requestSort('firstIp', sortConfig, setSortConfig)}>Start IP {getSortIcon('firstIp', sortConfig)}</th>
+                                                    <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer" onClick={() => requestSort('lastIp', sortConfig, setSortConfig)}>End IP {getSortIcon('lastIp', sortConfig)}</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                                                {displayedResults.map((row, idx) => (
+                                                    <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors">
+                                                        <td className="p-3 text-slate-500 dark:text-slate-400">{row.no}</td>
+                                                        <td className="p-3">
+                                                            {row.type === 'Free' ? (
+                                                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50">Free</span>
+                                                            ) : (
+                                                                <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800/50">Used</span>
+                                                            )}
+                                                        </td>
+                                                        <td className={`p-3 font-mono font-bold flex items-center gap-2 group ${row.type === 'Free' ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-700 dark:text-slate-300'}`}>
+                                                            <span>{row.network}{row.maskCidr}</span>
+                                                            <button onClick={() => executeCopy(`${row.network}${row.maskCidr}`, 'Subnet copied!', showToast)} className="text-slate-400 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"><CopyIcon /></button>
+                                                        </td>
+                                                        <td className="p-3 text-slate-600 dark:text-slate-300 font-medium">{row.sizeFormatted}</td>
+                                                        <td className="p-3 text-slate-500 dark:text-slate-400 font-mono text-xs">{row.firstIp}</td>
+                                                        <td className="p-3 text-slate-500 dark:text-slate-400 font-mono text-xs">{row.lastIp}</td>
+                                                    </tr>
+                                                ))}
+                                                {displayedResults.length === 0 && (
+                                                    <tr><td colSpan="6" className="p-8 text-center text-slate-400 dark:text-slate-500">No blocks found for the current filter.</td></tr>
+                                                )}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 border-dashed rounded-xl h-full min-h-[400px] flex items-center justify-center p-12 text-center text-slate-400 dark:text-slate-500">
+                                    <div className="max-w-xs">
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="mx-auto mb-4 text-slate-300 dark:text-slate-600" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><path d="M11 8v6"></path><path d="M8 11h6"></path></svg>
+                                        <p>Enter the parent network and used prefixes to map your entire address space, revealing perfectly aligned free blocks.</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+
+        // ==========================================
+        // MAC & EUI-64 UTILITY
+        // ==========================================
+        function MacUtility({ showToast }) {
+            const [macInput, setMacInput] = useState('00-1A-2B-3C-4D-5E');
+            const [prefixInput, setPrefixInput] = useState('fe80::/64');
+            const [results, setResults] = useState(null);
+            const [error, setError] = useState(null);
+
+            useEffect(() => { calculate(); }, [macInput, prefixInput]);
+
+            const calculate = () => {
+                setError(null);
+                if (!macInput.trim()) {
+                    setResults(null);
+                    return;
+                }
+
+                // Strip any non-hex character
+                const cleanMac = macInput.replace(/[^0-9A-Fa-f]/g, '').toLowerCase();
+                
+                if (cleanMac.length !== 12) {
+                    setError("Invalid MAC address. Must contain exactly 12 hexadecimal characters.");
+                    setResults(null);
+                    return;
+                }
+
+                // Generates Formats
+                const formatUnix = cleanMac.match(/.{1,2}/g).join(':');
+                const formatWin = cleanMac.match(/.{1,2}/g).join('-').toUpperCase();
+                const formatCisco = cleanMac.match(/.{1,4}/g).join('.');
+
+                // EUI-64 Logic
+                let firstByte = parseInt(cleanMac.substring(0, 2), 16);
+                firstByte = firstByte ^ 0x02; // Invert universal/local bit (7th bit)
+                let modFirstByte = firstByte.toString(16).padStart(2, '0');
+
+                // Insert FFFE in the middle
+                let interfaceId = `${modFirstByte}${cleanMac.substring(2, 6)}fffe${cleanMac.substring(6, 12)}`;
+                
+                let blocks = [];
+                for (let i = 0; i < 16; i += 4) {
+                    let block = interfaceId.substring(i, i + 4);
+                    // Standard IPv6 zero omission rules
+                    blocks.push(parseInt(block, 16).toString(16));
+                }
+                let euiSuffix = blocks.join(':');
+
+                // Prefix Formatting
+                let p = prefixInput.trim() || 'fe80::';
+                p = p.split('/')[0]; // Remove CIDR if present
+                
+                if (!p.endsWith('::')) {
+                    if (p.endsWith(':')) {
+                        // Keep as is
+                    } else if (p.includes('::')) {
+                        // Prefix has compression elsewhere, just append a colon if we are adding blocks
+                        p = p + ':';
+                    } else {
+                        // Standard fallback
+                        p = p + '::';
+                    }
+                }
+                
+                let fullIpv6 = p.endsWith('::') ? p + euiSuffix : p + euiSuffix;
+
+                setResults({
+                    cleanMac, formatUnix, formatWin, formatCisco, euiSuffix, fullIpv6
+                });
+            };
+
+            const copyToExcel = () => {
+                if (!results) return;
+                let text = `Format\tValue\n`;
+                text += `Linux/Unix (Colon)\t${results.formatUnix}\n`;
+                text += `Windows (Hyphen)\t${results.formatWin}\n`;
+                text += `Cisco (Dot)\t${results.formatCisco}\n`;
+                text += `EUI-64 Interface ID\t${results.euiSuffix}\n`;
+                text += `Full IPv6 Address\t${results.fullIpv6}`;
+                executeCopy(text, 'MAC / EUI-64 Results copied!', showToast);
+            };
+
+            return (
+                <div className="animate-in fade-in duration-300">
+                    <div className="bg-blue-50/50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800/50 rounded-xl p-4 mb-8 flex gap-3 text-sm text-blue-900 dark:text-blue-100 shadow-sm">
+                        <InfoIcon />
+                        <div>
+                            <strong className="block font-semibold mb-1">MAC Address & EUI-64 Utility</strong>
+                            <p className="opacity-90 mb-1">Convert MAC addresses into standardized vendor formats and dynamically generate IPv6 EUI-64 link-local or global unicast addresses.</p>
+                            <ul className="list-disc pl-4 space-y-1 opacity-90">
+                                <li><strong>Auto-formatting:</strong> Instantly converts between Windows (Hyphen), Unix (Colon), and Cisco (Dot) notations.</li>
+                                <li><strong>Bit-Flipping:</strong> Automatically inverts the 7th bit and injects <code>FFFE</code> for accurate IPv6 SLAAC address generation.</li>
+                            </ul>
+                        </div>
+                    </div>
+
+                    <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 mb-8">
+                        <div className="flex flex-wrap gap-6 items-end">
+                            <div className="flex-1 min-w-[200px]">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">
+                                    MAC Address
+                                </label>
+                                <input 
+                                    type="text" 
+                                    value={macInput} 
+                                    onChange={(e) => setMacInput(e.target.value)} 
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow font-mono" 
+                                    placeholder="e.g. 00-1A-2B-3C-4D-5E" 
+                                />
+                            </div>
+                            <div className="flex-1 min-w-[200px]">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">
+                                    IPv6 Prefix <span className="font-normal text-slate-400 dark:text-slate-500 ml-1">(Optional)</span>
+                                </label>
+                                <input 
+                                    type="text" 
+                                    value={prefixInput} 
+                                    onChange={(e) => setPrefixInput(e.target.value)} 
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-shadow font-mono" 
+                                    placeholder="e.g. fe80::/64 or 2001:db8:1::" 
+                                />
+                            </div>
+                        </div>
+                        {error && <div className="text-red-500 dark:text-red-400 text-sm mt-3 flex items-center gap-1.5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>{error}</div>}
+                    </div>
+
+                    {results && (
+                        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden">
+                            <div className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-between items-center">
+                                <h3 className="font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                    Results
+                                </h3>
+                                <button 
+                                    onClick={copyToExcel} 
+                                    className="text-sm font-medium text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition-colors shadow-sm"
+                                >
+                                    <ExcelIcon /> Copy for Excel
+                                </button>
+                            </div>
+                            <div className="px-6 py-2">
+                                <table className="w-full text-left whitespace-nowrap text-sm">
+                                    <tbody>
+                                        <CopyableRow label="Linux / Unix format:" value={results.formatUnix} showToast={showToast} extraData="(Colon Separated)" />
+                                        <CopyableRow label="Windows format:" value={results.formatWin} showToast={showToast} extraData="(Hyphen Separated)" />
+                                        <CopyableRow label="Cisco format:" value={results.formatCisco} showToast={showToast} extraData="(Dot Separated)" />
+                                        
+                                        <tr className="border-b border-slate-100 dark:border-slate-700/50 bg-purple-50/50 dark:bg-purple-900/10 group hover:bg-purple-100/50 dark:hover:bg-purple-900/20 transition-colors">
+                                            <td className="pr-4 py-3 font-bold text-slate-800 dark:text-slate-200">EUI-64 Addr:</td>
+                                            <td className="py-3 text-purple-700 dark:text-purple-400 font-mono font-bold text-base flex items-center gap-3">
+                                                <span>{results.fullIpv6}</span>
+                                                <button onClick={() => executeCopy(`${results.fullIpv6}`, 'EUI-64 Address copied!', showToast)} className="text-slate-400 dark:text-slate-500 hover:text-purple-600 dark:hover:text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-purple-100 dark:hover:bg-purple-900/40"><CopyIcon /></button>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // ==========================================
+        // DOCUMENTATION MODAL COMPONENT
+        // ==========================================
+        
+        function DocumentationModal({ isOpen, onClose }) {
+            if (!isOpen) return null;
+            
+            return (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6">
+                    <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm animate-fade-in" onClick={onClose}></div>
+                    <div className="relative bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col animate-slide-up border border-slate-200 dark:border-slate-700">
+                        
+                        {/* Modal Header */}
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-700/50">
+                            <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                <BookIcon /> Technical User Guide
+                            </h2>
+                            <button 
+                                onClick={onClose}
+                                className="p-2 text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors"
+                            >
+                                <CloseIcon />
+                            </button>
+                        </div>
+                        
+                        {/* Modal Body */}
+                        <div className="p-6 overflow-y-auto custom-scrollbar space-y-8 text-slate-700 dark:text-slate-300 leading-relaxed">
+                            
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    🌟 General Features
+                                </h3>
+                                <ul className="list-disc pl-6 space-y-2 mb-4 opacity-90">
+                                    <li><strong>Seamless IPv4 & IPv6 Support:</strong> Every module natively supports both IP versions.</li>
+                                    <li><strong>"Copy for Excel":</strong> Every table and output can be copied directly to your clipboard in a tab-separated format that pastes perfectly into Microsoft Excel or Google Sheets.</li>
+                                    <li><strong>Local History Tracking:</strong> Your recent inputs (like IP addresses and parent networks) are saved locally in your browser. Click on the pill-shaped history tags below input fields to quickly reload previous queries.</li>
+                                    <li><strong>Dark Mode:</strong> Toggle between light and dark themes using the Sun/Moon icon in the top right corner.</li>
+                                </ul>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">1</span>
+                                    IPv4/IPv6 Calculator
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> This tool determines the network address, broadcast address, wildcard mask, and the exact range of usable host IP addresses for any given IP and Subnet Mask.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <ol className="list-decimal pl-6 space-y-2 mb-4 opacity-90">
+                                    <li>Enter an IP address in the <strong>Address</strong> field.
+                                        <div className="text-sm text-slate-500 dark:text-slate-400 mt-1 italic">Tip: You can use "Magic Paste" by pasting an IP with a CIDR notation (e.g., <code>192.168.1.50/26</code>). The tool will automatically split the IP and the Mask into their respective fields.</div>
+                                    </li>
+                                    <li>Enter the Subnet Mask in the <strong>Netmask</strong> field (can be decimal like <code>255.255.255.0</code> or CIDR like <code>24</code>).</li>
+                                    <li>Click <strong>Calculate</strong>.</li>
+                                    <li>To view or copy every single usable IP in that subnet, click <strong>Generate Complete Range of Usable IPs</strong> at the bottom of the results.</li>
+                                </ol>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Input:</span> Address: <code>10.135.8.20</code>, Netmask: <code>28</code><br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span> The tool will show that this is a Private Network, the Network Address is <code>10.135.8.16/28</code>, the Broadcast is <code>10.135.8.31</code>, and you have <code>14</code> usable IPs ranging from <code>.17</code> to <code>.30</code>.
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">2</span>
+                                    Subnet Generator
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> You can generate subnets based on a "Major Network" block or find all mathematically valid subnets that fit between two specific IP addresses.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <div className="pl-2 space-y-4 mb-4 opacity-90">
+                                    <div>
+                                        <strong className="text-sm">By Major Network:</strong>
+                                        <ol className="list-decimal pl-6 mt-1 space-y-1">
+                                            <li>Enter your parent block (e.g., <code>10.0.0.0</code>) and its current mask (e.g., <code>8</code>).</li>
+                                            <li>Enter your <strong>Target Mask</strong> (e.g., <code>16</code>).</li>
+                                            <li>Click <strong>Generate</strong>.</li>
+                                        </ol>
+                                    </div>
+                                    <div>
+                                        <strong className="text-sm">By IP Range:</strong>
+                                        <ol className="list-decimal pl-6 mt-1 space-y-1">
+                                            <li>Enter a <strong>Start IP</strong> and an <strong>End IP</strong>.</li>
+                                            <li>Enter your <strong>Target Mask</strong>.</li>
+                                            <li>The tool will find all subnets of the target size that fit <em>perfectly</em> between those two IPs.</li>
+                                        </ol>
+                                    </div>
+                                </div>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Scenario:</span> You are given the <code>172.16.0.0/16</code> block and need to split it into <code>/24</code> subnets for different branch offices.<br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Input:</span> Select "By Major Network". IP: <code>172.16.0.0</code>, Major Mask: <code>16</code>, Target Mask: <code>24</code>.<br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span> The tool generates 256 individual <code>/24</code> subnets (<code>172.16.0.0/24</code>, <code>172.16.1.0/24</code>, etc.), providing the usable ranges and broadcast address for each.
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">3</span>
+                                    VLSM & Visual Map
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> Instead of making all subnets the same size, VLSM allows you to allocate blocks precisely based on the number of hosts required. This tool also includes a <strong>Binary Treemap</strong> and <strong>Linear Proportion Bar</strong> to visualize how the parent block is divided.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <ol className="list-decimal pl-6 space-y-2 mb-4 opacity-90">
+                                    <li>Enter your parent block in the <strong>Major Network</strong> field (e.g., <code>192.168.1.0/24</code>).</li>
+                                    <li>In the <strong>Subnets Needed</strong> section, define your requirements. You can define size by <strong>Req. IPs</strong> (Hosts) or by <strong>CIDR</strong> (<code>/x</code>).</li>
+                                    <li>Use the <strong>Qty</strong> multiplier to instantly request multiple subnets of the same size.</li>
+                                    <li>Click <strong>Build VLSM Plan</strong>.</li>
+                                    <li><em>Visualizations:</em> Use the toggle in the top right of the results to switch between the mathematical <code>Treemap</code> (showing binary bit splits) and the <code>Linear</code> view.</li>
+                                </ol>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Scenario:</span> Setting up a new office with <code>192.168.1.0/24</code>. You need a VLAN for HR (60 devices), IT (25 devices), and 3 point-to-point router links (2 devices each).<br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Input:</span><br/>
+                                    <ul className="list-disc pl-4 mt-1 mb-1">
+                                        <li>Requirement 1: Type <code>hosts</code>, Size <code>60</code>, Qty <code>1</code>.</li>
+                                        <li>Requirement 2: Type <code>hosts</code>, Size <code>25</code>, Qty <code>1</code>.</li>
+                                        <li>Requirement 3: Type <code>hosts</code>, Size <code>2</code>, Qty <code>3</code> (or use CIDR <code>/30</code>).</li>
+                                    </ul>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span> The tool automatically assigns the largest blocks first (<code>/26</code> for HR, <code>/27</code> for IT, and three <code>/30</code>s for PtP), showing exactly how they fit together without overlapping.
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">4</span>
+                                    IP Summarization (Supernetting)
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> Useful for building Access Control Lists (ACLs), firewall rules, or optimizing routing tables by combining multiple contiguous networks into a single summary route.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <ol className="list-decimal pl-6 space-y-2 mb-4 opacity-90">
+                                    <li>Paste a list of IPs or ranges into the large text box. (Formats accepted: <code>192.168.1.15</code>, <code>10.0.0.1 - 10.0.0.50</code>, or <code>192.168.1.0/24</code>).</li>
+                                    <li><strong>Optional Target Mask:</strong> If left blank, the tool calculates the absolute tightest CIDR blocks possible. If you enter a target (e.g., <code>24</code>), it will group the IPs strictly into blocks of that size.</li>
+                                    <li>Click <strong>Summarize IPs</strong> (or press Ctrl+Enter).</li>
+                                </ol>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Input:</span> <code>192.168.1.10 - 192.168.1.25</code><br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span> The tool calculates that the tightest way to cover these 16 IPs is using two distinct mathematical blocks: <code>192.168.1.8/29</code> (covering .8 to .15) and <code>192.168.1.16/28</code> (covering .16 to .31).
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">5</span>
+                                    Free Space Finder
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> If you have a large corporate block and have allocated random chunks out of it over the years, this tool will map the entire space logically. It shows you exactly what is "Used" and precisely calculates the CIDR blocks available in the "Free" gaps.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <ol className="list-decimal pl-6 space-y-2 mb-4 opacity-90">
+                                    <li>Enter your overarching corporate block in <strong>Parent Network</strong> (e.g., <code>10.0.0.0/8</code>).</li>
+                                    <li>Paste all your known, allocated subnets into the <strong>Used Prefixes</strong> box.</li>
+                                    <li>Click <strong>Map Address Space</strong>.</li>
+                                    <li>Use the <strong>Free Only</strong> or <strong>Used Only</strong> filter buttons to focus on available contiguous blocks.</li>
+                                </ol>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Input:</span> Parent: <code>172.16.0.0/12</code>, Used: <code>172.16.0.0/16</code><br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span> The tool maps the space and shows that you have used the first chunk, but the remaining space is available as three perfectly aligned free blocks: <code>172.17.0.0/16</code>, <code>172.18.0.0/15</code>, and <code>172.20.0.0/14</code>.
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+
+                            <section>
+                                <h3 className="text-lg font-bold text-slate-900 dark:text-slate-100 mb-3 flex items-center gap-2">
+                                    <span className="bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 w-6 h-6 rounded-full inline-flex items-center justify-center text-sm border border-blue-200 dark:border-blue-800">6</span>
+                                    MAC & EUI-64 Utility
+                                </h3>
+                                <p className="mb-2 opacity-90"><strong>Overview:</strong> Converts MAC addresses across different vendor formats (Cisco, Windows, Linux/Unix) and automatically performs the "bit-flipping" logic required to generate an IPv6 EUI-64 address.</p>
+                                <p className="mb-2 opacity-90 font-semibold">How to Use:</p>
+                                <ol className="list-decimal pl-6 space-y-2 mb-4 opacity-90">
+                                    <li>Enter any MAC address in the <strong>MAC Address</strong> field. (The tool will automatically strip invalid characters, so <code>00:1A:2B:3C:4D:5E</code> and <code>001a.2b3c.4d5e</code> are both fine).</li>
+                                    <li>Enter an optional <strong>IPv6 Prefix</strong> (defaults to the link-local prefix <code>fe80::/64</code>).</li>
+                                    <li>The results instantly generate as you type.</li>
+                                </ol>
+                                <div className="bg-slate-50 dark:bg-slate-900/50 p-4 rounded-lg border border-slate-200 dark:border-slate-700 text-sm">
+                                    <strong className="block mb-2 text-slate-800 dark:text-slate-200">Practical Example:</strong>
+                                    <span className="text-slate-500 dark:text-slate-400">Input:</span> MAC <code>00-1A-2B-3C-4D-5E</code>, Prefix <code>2001:db8:1::/64</code><br/>
+                                    <span className="text-slate-500 dark:text-slate-400 mt-1 block">Result:</span><br/>
+                                    <ul className="list-disc pl-4 mt-1">
+                                        <li>Unix: <code>00:1a:2b:3c:4d:5e</code></li>
+                                        <li>Cisco: <code>001a.2b3c.4d5e</code></li>
+                                        <li>EUI-64 Interface ID: <code>021a:2bff:fe3c:4d5e</code> (Notice the 7th bit is flipped <code>00</code> &rarr; <code>02</code>, and <code>fffe</code> is injected in the middle).</li>
+                                        <li>Full IPv6: <code>2001:db8:1::021a:2bff:fe3c:4d5e</code></li>
+                                    </ul>
+                                </div>
+                            </section>
+
+                            <hr className="border-slate-100 dark:border-slate-700/50" />
+                            <section className="text-center mt-6 bg-slate-50 dark:bg-slate-900/50 p-6 rounded-xl border border-slate-200 dark:border-slate-700">
+                                <p className="text-slate-600 dark:text-slate-400">
+                                    Developed and maintained by <strong>Rizwan Ghani</strong><br/>
+                                    <a href="https://www.linkedin.com/in/rizwanghani" target="_blank" className="text-blue-600 dark:text-blue-400 font-bold hover:underline mt-2 inline-flex items-center gap-1.5 transition-colors">
+                                        <LinkedInIcon />
+                                        linkedin.com/in/rizwanghani
+                                    </a>
+                                </p>
+                            </section>
+
+                        </div>
+                        
+                        {/* Modal Footer */}
+                        <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-700/50 bg-slate-50 dark:bg-slate-800/50 rounded-b-2xl flex justify-end">
+                            <button 
+                                onClick={onClose}
+                                className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700 px-6 py-2 rounded-lg font-medium transition-colors shadow-sm"
+                            >
+                                Close Guide
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // ==========================================
+        // MAIN APP COMPONENT
+        // ==========================================
+
+        function App() {
+            // Initial state set to 'calculator'
+            const [activeTab, setActiveTab] = useState('calculator');
+            const [toastMessage, setToastMessage] = useState('');
+            const [isDocsOpen, setIsDocsOpen] = useState(false);
+
+            // Dark Mode State & Logic
+            const [isDarkMode, setIsDarkMode] = useState(() => {
+                if (typeof window !== 'undefined') {
+                    return localStorage.getItem('theme') === 'dark' || 
+                        (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                }
+                return false;
+            });
+
+            useEffect(() => {
+                if (isDarkMode) {
+                    document.documentElement.classList.add('dark');
+                    localStorage.setItem('theme', 'dark');
+                } else {
+                    document.documentElement.classList.remove('dark');
+                    localStorage.setItem('theme', 'light');
+                }
+            }, [isDarkMode]);
+
+            // Global Toast Logic
+            const showToast = useCallback((msg) => {
+                setToastMessage(msg);
+                setTimeout(() => setToastMessage(''), 3000);
+            }, []);
+
+            return (
+                <div className="min-h-screen flex flex-col items-center py-12 px-4 transition-colors duration-200">
+                    
+                    {/* Header */}
+                    <div className="w-full max-w-6xl mb-8 flex flex-col sm:flex-row justify-between items-center gap-4">
+                        <div className="flex items-center gap-3 text-blue-600 dark:text-blue-400">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 16V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v9m16 0H4m16 0 1.28 2.55a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45L4 16"></path><path d="M10 12h4"></path></svg>
+                            <div>
+                                <h1 className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 tracking-tight">IP Address Planning Tools</h1>
+                                <div className="text-sm font-medium text-slate-500 dark:text-slate-400 mt-1 flex items-center flex-wrap gap-x-1.5 gap-y-1">
+                                    Developed by <strong className="text-slate-700 dark:text-slate-300">Rizwan Ghani</strong>
+                                    <span className="hidden sm:inline opacity-50">•</span>
+                                    <a href="https://www.linkedin.com/in/rizwanghani" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline inline-flex items-center gap-1 transition-colors">
+                                        <LinkedInIcon /> Connect on LinkedIn
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-3">
+                            {/* Dark Mode Toggle */}
+                            <button 
+                                onClick={() => setIsDarkMode(!isDarkMode)}
+                                className="p-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-400 rounded-lg transition-all shadow-sm"
+                                aria-label="Toggle Dark Mode"
+                            >
+                                {isDarkMode ? <SunIcon /> : <MoonIcon />}
+                            </button>
+
+                            {/* Documentation Button */}
+                            <button 
+                                onClick={() => setIsDocsOpen(true)}
+                                className="flex items-center gap-2 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-blue-700 dark:hover:text-blue-400 px-4 py-2 rounded-lg font-semibold text-sm transition-all shadow-sm"
+                            >
+                                <BookIcon />
+                                Documentation
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="w-full max-w-6xl bg-white dark:bg-slate-800 shadow-md shadow-slate-200/50 dark:shadow-slate-900/50 rounded-2xl border border-slate-200 dark:border-slate-700 p-2 sm:p-6 lg:p-8 transition-colors duration-200">
+                        
+                        {/* Custom Tab Navigation */}
+                        <div className="flex border-b border-slate-200 dark:border-slate-700/50 mb-8 overflow-x-auto whitespace-nowrap hide-scrollbar">
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'calculator' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('calculator')}
+                            >
+                                IPv4/IPv6 Calculator
+                                {activeTab === 'calculator' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'generator' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('generator')}
+                            >
+                                Subnet Generator
+                                {activeTab === 'generator' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'vlsm' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('vlsm')}
+                            >
+                                VLSM & Visual Map
+                                {activeTab === 'vlsm' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'from-ips' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('from-ips')}
+                            >
+                                IP Summarization
+                                {activeTab === 'from-ips' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'free-space' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('free-space')}
+                            >
+                                Free Space Finder
+                                {activeTab === 'free-space' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                            <button 
+                                className={`py-3 px-6 font-semibold text-sm transition-all relative ${activeTab === 'mac' ? 'text-blue-600 dark:text-blue-400' : 'text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/80'}`}
+                                onClick={() => setActiveTab('mac')}
+                            >
+                                MAC & EUI-64
+                                {activeTab === 'mac' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-blue-600 dark:bg-blue-400 rounded-t-full"></div>}
+                            </button>
+                        </div>
+
+                        {/* Tab Content Rendering */}
+                        <div className="min-h-[500px]">
+                            {activeTab === 'calculator' && <Calculator showToast={showToast} />}
+                            {activeTab === 'generator' && <Generator showToast={showToast} />}
+                            {activeTab === 'vlsm' && <VlsmPlanner showToast={showToast} />}
+                            {activeTab === 'from-ips' && <Summarizer showToast={showToast} />}
+                            {activeTab === 'free-space' && <FreeSpaceFinder showToast={showToast} />}
+                            {activeTab === 'mac' && <MacUtility showToast={showToast} />}
+                        </div>
+                    </div>
+
+                    {/* Global Floating Toast */}
+                    <div className={`fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 bg-slate-800 dark:bg-slate-700 text-white font-medium rounded-full shadow-lg shadow-slate-900/20 dark:shadow-slate-900/50 flex items-center gap-2 pointer-events-none transition-all duration-300 z-50 ${toastMessage ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}>
+                        <svg className="text-emerald-400" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+                        {toastMessage}
+                    </div>
+
+                    {/* Documentation Modal Overlay */}
+                    <DocumentationModal isOpen={isDocsOpen} onClose={() => setIsDocsOpen(false)} />
+
+                    <div className="text-center text-slate-500 dark:text-slate-400 text-sm mt-8 pb-4 flex flex-col items-center gap-1.5">
+                        <span>Created by <strong className="text-slate-700 dark:text-slate-300">Rizwan Ghani</strong></span>
+                        <a href="https://www.linkedin.com/in/rizwanghani" target="_blank" rel="noopener noreferrer" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline flex items-center gap-1 transition-colors">
+                            <LinkedInIcon /> linkedin.com/in/rizwanghani
+                        </a>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
