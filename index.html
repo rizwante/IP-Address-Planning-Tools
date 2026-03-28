@@ -240,7 +240,7 @@
                 } else if (config.key === 'maskCidr') {
                     aVal = parseInt(aVal.replace('/', ''), 10);
                     bVal = parseInt(bVal.replace('/', ''), 10);
-                } else if (['usedCount', 'freeCount', 'size', 'neededIps', 'allocatedIps', 'value'].includes(config.key)) {
+                } else if (['usedCount', 'freeCount', 'size', 'neededIps', 'allocatedIps', 'value', 'usableIpsCount'].includes(config.key)) {
                     aVal = BigInt(aVal);
                     bVal = BigInt(bVal);
                 }
@@ -1221,6 +1221,16 @@
                 const step = 1n << (maxBits - BigInt(targetCidr)); 
                 let results = [];
 
+                let usableIpsCount;
+                if (version === 4) {
+                    if (targetCidr === 32) usableIpsCount = 1n;
+                    else if (targetCidr === 31) usableIpsCount = 2n;
+                    else usableIpsCount = step - 2n;
+                } else {
+                    usableIpsCount = step;
+                }
+                const usableIpsStr = usableIpsCount.toString();
+
                 if (genMode === 'network') {
                     const majorMaskData = parseMask(genMaskInput, version);
                     if (majorMaskData === null) { setGenError("Invalid Major Subnet Mask."); setGenResults(null); return; }
@@ -1246,7 +1256,7 @@
                             lastLong = bcastLong;
                         }
 
-                        results.push({ no: Number(i + 1n), network: formatIp(netLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
+                        results.push({ no: Number(i + 1n), network: formatIp(netLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, usableIpsCount: usableIpsStr, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
                     }
                 } else {
                     const endIpData = parseIp(rangeEndIp);
@@ -1273,7 +1283,7 @@
                             lastLong = bcastLong;
                         }
 
-                        results.push({ no: Number(count + 1n), network: formatIp(currentNetLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
+                        results.push({ no: Number(count + 1n), network: formatIp(currentNetLong, version), maskDecimal: targetMaskStr, maskCidr: `/${targetCidr}`, usableIpsCount: usableIpsStr, firstUsable: formatIp(firstLong, version), lastUsable: formatIp(lastLong, version), broadcast: formatIp(bcastLong, version) });
 
                         currentNetLong = currentNetLong + step;
                         count++;
@@ -1286,8 +1296,8 @@
 
             const copyToExcel = () => {
                 if (!displayedGenResults) return;
-                let text = "No.\tSubnet\tMask (Decimal)\tMask (CIDR)\t1st Usable IP\tLast Usable IP\tBroadcast\n";
-                text += displayedGenResults.map(r => `${r.no}\t${r.network}\t${r.maskDecimal}\t${r.maskCidr}\t${r.firstUsable}\t${r.lastUsable}\t${r.broadcast}`).join('\n');
+                let text = "No.\tSubnet\tMask (Decimal)\tMask (CIDR)\tUsable IPs\t1st Usable IP\tLast Usable IP\tBroadcast\n";
+                text += displayedGenResults.map(r => `${r.no}\t${r.network}\t${r.maskDecimal}\t${r.maskCidr}\t${r.usableIpsCount}\t${r.firstUsable}\t${r.lastUsable}\t${r.broadcast}`).join('\n');
                 executeCopy(text, 'Table copied to Excel format!', showToast);
             };
 
@@ -1386,6 +1396,7 @@
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('network', genSortConfig, setGenSortConfig)}>Subnet {getSortIcon('network', genSortConfig)}</th>
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskDecimal', genSortConfig, setGenSortConfig)}>Mask (Dec) {getSortIcon('maskDecimal', genSortConfig)}</th>
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('maskCidr', genSortConfig, setGenSortConfig)}>CIDR {getSortIcon('maskCidr', genSortConfig)}</th>
+                                            <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('usableIpsCount', genSortConfig, setGenSortConfig)}>Usable IPs {getSortIcon('usableIpsCount', genSortConfig)}</th>
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('firstUsable', genSortConfig, setGenSortConfig)}>1st Usable IP {getSortIcon('firstUsable', genSortConfig)}</th>
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('lastUsable', genSortConfig, setGenSortConfig)}>Last Usable IP {getSortIcon('lastUsable', genSortConfig)}</th>
                                             <th className="p-3 font-semibold text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer select-none transition-colors" onClick={() => requestSort('broadcast', genSortConfig, setGenSortConfig)}>Broadcast {getSortIcon('broadcast', genSortConfig)}</th>
@@ -1398,6 +1409,7 @@
                                                 <td className="p-3 text-blue-700 dark:text-blue-400 font-mono font-medium">{row.network}</td>
                                                 <td className="p-3 text-slate-600 dark:text-slate-400 font-mono text-xs">{row.maskDecimal}</td>
                                                 <td className="p-3 text-slate-600 dark:text-slate-300 font-mono font-medium">{row.maskCidr}</td>
+                                                <td className="p-3 text-slate-600 dark:text-slate-300 font-medium">{row.usableIpsCount}</td>
                                                 <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.firstUsable}</td>
                                                 <td className="p-3 text-emerald-600 dark:text-emerald-400 font-mono">{row.lastUsable}</td>
                                                 <td className="p-3 text-slate-600 dark:text-slate-300 font-mono">{row.broadcast}</td>
