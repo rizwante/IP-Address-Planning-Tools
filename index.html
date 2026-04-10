@@ -723,6 +723,7 @@
         function VlsmPlanner({ showToast }) {
             const { history, addHistory, clearHistory } = useHistory('vlsm_history');
             const [majorNetwork, setMajorNetwork] = useState('192.168.1.0/24');
+            const [usedPrefixesInput, setUsedPrefixesInput] = useState('');
             const [visualMode, setVisualMode] = useState('treemap'); // Add visualization toggle
             const [subnets, setSubnets] = useState([
                 { id: 1, name: 'VLAN 10 - HR', type: 'hosts', value: 60, quantity: 1 },
@@ -779,6 +780,19 @@
                 return insertAllocation(node.right, alloc, maxBitsNumber);
             };
 
+            const flattenTree = (node, blocks = []) => {
+                if (!node) return blocks;
+                if (node.type === 'split') {
+                    flattenTree(node.left, blocks);
+                    flattenTree(node.right, blocks);
+                } else if (node.type === 'allocated') {
+                    blocks.push({ type: 'allocated', ...node.allocData, cidr: node.cidr, networkLong: node.networkLong });
+                } else if (node.type === 'free') {
+                    blocks.push({ type: 'free', cidr: node.cidr, networkLong: node.networkLong });
+                }
+                return blocks;
+            };
+
             const calculateVlsm = () => {
                 setError(null);
                 
@@ -809,6 +823,127 @@
                 const majorNetworkLong = ipData.long & maskData.long;
                 const majorBroadcastLong = majorNetworkLong | ((1n << (maxBits - BigInt(maskData.cidr))) - 1n);
                 const totalMajorIps = majorBroadcastLong - majorNetworkLong + 1n;
+
+                let rootNode = { networkLong: majorNetworkLong, cidr: maskData.cidr, type: 'free' };
+                let usedIps = 0n;
+
+                // --- Handle Used Prefixes ---
+                const rawLines = usedPrefixesInput.split(/[\r\n]+/).map(t => t.trim()).filter(t => t);
+                let usedRanges = [];
+                let originalUsedRanges = [];
+                for (const line of rawLines) {
+                    let tokens = [line];
+                    // Fallback to comma separation ONLY if no description format is detected
+                    if (line.includes(',') && !line.match(/^([a-fA-F0-9.:/]+(?:\s*-\s*[a-fA-F0-9.:]+)?)\s+(.+)$/)) {
+                        tokens = line.split(',').map(t => t.trim()).filter(t => t);
+                    }
+
+                    for (const tokenStr of tokens) {
+                        const match = tokenStr.match(/^([a-fA-F0-9.:/]+(?:\s*-\s*[a-fA-F0-9.:]+)?)(?:\s+(.*))?$/);
+                        if (match) {
+                            let token = match[1];
+                            let desc = match[2] ? match[2].trim() : 'Used (Pre-allocated)';
+                            
+                            let sLong = null;
+                            let eLong = null;
+
+                            if (token.includes('/')) {
+                                const [ipStr, maskStr] = token.split('/');
+                                const ipD = parseIp(ipStr);
+                                const md = parseMask(maskStr, version);
+                                if (ipD && md && ipD.version === version) {
+                                    sLong = ipD.long & md.long;
+                                    eLong = sLong | ((1n << BigInt(maxBitsNumber - md.cidr)) - 1n);
+                                }
+                            } else if (token.includes('-')) {
+                                const [startStr, endStr] = token.split('-');
+                                const startD = parseIp(startStr);
+                                const endD = parseIp(endStr);
+                                if (startD && endD && startD.version === version) {
+                                    sLong = startD.long;
+                                    eLong = endD.long;
+                                }
+                            } else {
+                                const ipD = parseIp(token);
+                                if (ipD && ipD.version === version) {
+                                    sLong = ipD.long;
+                                    eLong = ipD.long;
+                                }
+                            }
+
+                            if (sLong !== null && eLong !== null) {
+                                usedRanges.push([sLong, eLong]);
+                                originalUsedRanges.push({start: sLong, end: eLong, desc});
+                            }
+                        }
+                    }
+                }
+
+                let clampedRanges = [];
+                for (const [start, end] of usedRanges) {
+                    let cStart = start < majorNetworkLong ? majorNetworkLong : start;
+                    let cEnd = end > majorBroadcastLong ? majorBroadcastLong : end;
+                    if (cStart <= cEnd) clampedRanges.push([cStart, cEnd]);
+                }
+                clampedRanges.sort((a, b) => a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0));
+                
+                let mergedRanges = [];
+                if (clampedRanges.length > 0) {
+                    let current = clampedRanges[0];
+                    for (let i = 1; i < clampedRanges.length; i++) {
+                        if (clampedRanges[i][0] <= current[1] + 1n) {
+                            current[1] = current[1] > clampedRanges[i][1] ? current[1] : clampedRanges[i][1];
+                        } else {
+                            mergedRanges.push(current);
+                            current = clampedRanges[i];
+                        }
+                    }
+                    mergedRanges.push(current);
+                }
+
+                const forceAllocate = (node, targetLong, targetCidr, desc) => {
+                    if (node.type === 'allocated') return false; 
+                    if (node.cidr === targetCidr) {
+                        if (node.networkLong === targetLong) {
+                            if (node.type === 'free') {
+                                node.type = 'allocated';
+                                node.allocData = { name: desc, colorClass: 'bg-slate-500' };
+                                return true;
+                            }
+                            return false;
+                        }
+                        return false;
+                    }
+                    if (node.cidr > targetCidr) return false;
+
+                    if (node.type === 'free') {
+                        node.type = 'split';
+                        const step = 1n << BigInt(maxBitsNumber - (node.cidr + 1));
+                        node.left = { networkLong: node.networkLong, cidr: node.cidr + 1, type: 'free' };
+                        node.right = { networkLong: node.networkLong + step, cidr: node.cidr + 1, type: 'free' };
+                    }
+
+                    if (node.type === 'split') {
+                        const step = 1n << BigInt(maxBitsNumber - (node.cidr + 1));
+                        if (targetLong < node.networkLong + step) {
+                            return forceAllocate(node.left, targetLong, targetCidr, desc);
+                        } else {
+                            return forceAllocate(node.right, targetLong, targetCidr, desc);
+                        }
+                    }
+                    return false;
+                };
+
+                for (const [s, e] of mergedRanges) {
+                    const cidrsInRange = rangeToCidrs(s, e, maxBitsNumber);
+                    for (const b of cidrsInRange) {
+                        const originalMatch = originalUsedRanges.find(r => b.networkLong >= r.start && b.networkLong <= r.end);
+                        const desc = originalMatch ? originalMatch.desc : 'Used (Pre-allocated)';
+                        if (forceAllocate(rootNode, b.networkLong, b.cidr, desc)) {
+                            usedIps += b.size;
+                        }
+                    }
+                }
 
                 let processedReqs = [];
                 for (const req of subnets) {
@@ -867,10 +1002,7 @@
                     return 0;
                 });
 
-                // Build root node for the Binary Treemap
-                let rootNode = { networkLong: majorNetworkLong, cidr: maskData.cidr, type: 'free' };
                 let finalResults = [];
-                let usedIps = 0n;
 
                 for (let i = 0; i < processedReqs.length; i++) {
                     let req = processedReqs[i];
@@ -972,7 +1104,21 @@
                             </div>
                             <HistoryPills history={history} onClear={clearHistory} onSelect={setMajorNetwork} />
 
-                            <div className="flex justify-between items-center mb-2 mt-6 pb-2 border-b border-slate-100 dark:border-slate-700/50">
+                            <div className="mt-4 mb-2">
+                                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-200 mb-1.5">
+                                    Already Used Prefixes/Ranges <span className="font-normal text-slate-400 dark:text-slate-500">(Optional)</span>
+                                </label>
+                                <textarea 
+                                    value={usedPrefixesInput} 
+                                    onChange={(e) => setUsedPrefixesInput(e.target.value)} 
+                                    onKeyDown={(e) => (e.ctrlKey || e.metaKey) && e.key === 'Enter' && calculateVlsm()}
+                                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-600 rounded-lg px-4 py-2 text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono shadow-inner custom-scrollbar min-h-[80px]" 
+                                    placeholder="e.g.&#10;192.168.1.0/26 Core Routers&#10;192.168.1.100 - 192.168.1.120 DHCP Pool" 
+                                />
+                                <div className="text-xs text-slate-400 mt-1">Use Ctrl+Enter to calculate</div>
+                            </div>
+
+                            <div className="flex justify-between items-center mb-2 mt-4 pb-2 border-b border-slate-100 dark:border-slate-700/50">
                                 <h3 className="font-bold text-slate-800 dark:text-slate-100">2. Subnets Needed</h3>
                                 <button onClick={addSubnet} className="text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 hover:bg-blue-50 dark:hover:bg-slate-700 p-1.5 rounded transition-colors" title="Add Requirement">
                                     <PlusIcon />
@@ -1086,28 +1232,34 @@
                                             </div>
                                         ) : (
                                             <div className="w-full h-12 flex rounded-lg overflow-hidden shadow-inner bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 relative group">
-                                                {results.allocations.map((alloc, idx) => {
-                                                    const pct = Number((alloc.allocatedIps * 10000n) / results.totalSpace) / 100;
-                                                    return (
-                                                        <div 
-                                                            key={idx}
-                                                            className={`${alloc.colorClass} h-full flex items-center justify-center text-white text-xs font-bold overflow-hidden transition-all hover:opacity-90 cursor-help border-r border-white/20`}
-                                                            style={{ width: `${pct}%` }}
-                                                            title={`${alloc.name}\n${formatIp(alloc.networkLong, results.version)}/${alloc.cidr}`}
-                                                        >
-                                                            {pct > 5 && alloc.name}
-                                                        </div>
-                                                    )
+                                                {flattenTree(results.treeRoot).map((block, idx) => {
+                                                    const size = 1n << BigInt((results.version === 6 ? 128 : 32) - block.cidr);
+                                                    const pct = Number((size * 10000n) / results.totalSpace) / 100;
+                                                    
+                                                    if (block.type === 'allocated') {
+                                                        return (
+                                                            <div 
+                                                                key={idx}
+                                                                className={`${block.colorClass} h-full flex items-center justify-center text-white text-xs font-bold overflow-hidden transition-all hover:opacity-90 cursor-help border-r border-white/20`}
+                                                                style={{ width: `${pct}%` }}
+                                                                title={`${block.name}\n${formatIp(block.networkLong, results.version)}/${block.cidr}`}
+                                                            >
+                                                                {pct > 5 && block.name}
+                                                            </div>
+                                                        );
+                                                    } else {
+                                                        return (
+                                                            <div 
+                                                                key={idx}
+                                                                className="h-full flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs font-bold overflow-hidden cursor-help striped-bg"
+                                                                style={{ width: `${pct}%` }}
+                                                                title={`Free Space\n${formatIp(block.networkLong, results.version)}/${block.cidr}`}
+                                                            >
+                                                                {pct > 5 && 'Free'}
+                                                            </div>
+                                                        );
+                                                    }
                                                 })}
-                                                {results.freeSpace > 0n && (
-                                                    <div 
-                                                        className="h-full flex items-center justify-center text-slate-400 dark:text-slate-500 text-xs font-bold overflow-hidden cursor-help striped-bg"
-                                                        style={{ width: `${Number((results.freeSpace * 10000n) / results.totalSpace) / 100}%` }}
-                                                        title={`Free Space\nUnallocated IPs: ${results.freeSpace}`}
-                                                    >
-                                                        {Number((results.freeSpace * 10000n) / results.totalSpace) / 100 > 5 && 'Free Space'}
-                                                    </div>
-                                                )}
                                             </div>
                                         )}
                                         <div className="flex justify-between text-xs text-slate-400 dark:text-slate-500 mt-2 px-1 font-mono">
